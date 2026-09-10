@@ -56,6 +56,7 @@
       <button id="libExport" class="btn btn-ghost" title="导出当前筛选结果为 CSV">⬇ 导出CSV</button>
       <span class="hint" id="libHint"></span>
     </div>
+    <div class="kw-bar" id="kwBar"></div>
     <div class="lib-filters">
       <label>品类<select id="libCat"><option value="">全部</option></select></label>
       <label>地区<select id="libLoc"><option value="">全部</option></select></label>
@@ -93,7 +94,22 @@
       <label class="bulk-sel"><input type="checkbox" id="libSelectAll"> 全选本页</label>
       <button id="libDelSel" class="btn btn-danger">🗑 删除选中</button>
       <button id="libExportClean" class="btn btn-ghost">⬇ 导出商品(JSON)</button>
+      <button id="cardFieldBtn" class="btn btn-ghost" title="决定卡片上显示哪些信息">🎛 显示字段</button>
       <button id="ghTokenBtn" class="btn btn-ghost">⚙ GitHub Token</button>
+    </div>
+
+    <!-- 卡片显示字段面板：勾掉不关心的信息，卡片变矮、一屏看更多 -->
+    <div class="modal hidden" id="cardFieldPanel">
+      <div class="modal-box">
+        <button class="modal-close" id="cardFieldClose" title="关闭">×</button>
+        <h3>卡片显示字段</h3>
+        <p class="cf-hint">勾掉不关心的信息，卡片会变矮，一屏能看更多商品。设置只存在本机浏览器。主图与商品名是卡片身份，恒显示。</p>
+        <div class="cf-grid" id="cardFieldGrid"></div>
+        <div class="gh-token-actions" style="margin-top:16px;">
+          <button id="cardFieldReset" class="btn btn-ghost">恢复默认（全部显示）</button>
+          <button id="cardFieldClose2" class="btn btn-primary">完成</button>
+        </div>
+      </div>
     </div>
     <div class="modal hidden" id="ghTokenPanel">
       <div class="modal-box">
@@ -115,13 +131,6 @@
         <div class="gh-token-actions">
           <button id="ghClearDel" class="btn btn-ghost" style="color:#c0392b;">清空本地删除记录</button>
         </div>
-        <hr style="border:0;border-top:1px solid #eee;margin:16px 0;">
-        <h4>数据恢复（危险）</h4>
-        <p class="gh-token-tip">当前 GitHub 源只剩 <strong>6 件</strong>商品，是因为扩展的 today-only 过滤把历史商品从 catalog 中删除了。点下面按钮可从 2026-09-02 07:06 的历史版本恢复 <strong>335 件</strong>商品，并清空 <code>deleted.json</code> 删除记录。</p>
-        <div class="gh-token-actions">
-          <button id="ghRestoreCatalog" class="btn btn-ghost" style="color:#c0392b;">恢复 335 件商品</button>
-        </div>
-        <p class="gh-token-tip" style="font-size:11px;color:#888;">警告：此操作会覆盖 GitHub 上的 <code>catalog.json</code> 与 <code>deleted.json</code>，且不可撤销。请确认你真的想恢复全部商品。</p>
       </div>
     </div>
     <div class="lib-grid" id="libGrid"></div>
@@ -287,9 +296,14 @@
 
   <!-- 我的收藏（轻量监控） -->
   <section class="panel hidden" id="panel-fav">
-    <h2>我的收藏 <small>把心仪商品加入收藏，跨刷新保留（本地存储），作为简易监控清单</small></h2>
+    <h2>我的收藏 <small>收藏后可按分组整理、写备注，一键导出成选品清单</small></h2>
+    <div class="fav-tools">
+      <button id="favExport" class="btn btn-primary">⬇ 导出选品清单 (CSV)</button>
+      <span class="hint">导出的清单含 商品名 / 价格区间 / 月销 / 总销量 / 店铺 / 链接 / 分组 / 备注 / 收藏时间</span>
+    </div>
+    <div class="fav-bar" id="favBar"></div>
     <div class="lib-grid" id="favGrid"></div>
-    <div class="tip" id="favEmpty">还没有收藏。在「商品库」任意商品卡片点 ❤ 即可加入。</div>
+    <div class="tip" id="favEmpty">还没有收藏。在「商品库」点卡片上的 🤍 即可收藏，之后可在这里分组、写备注、导出选品清单。</div>
   </section>
 
   <!-- 定价计算器（对标知虾「定价计算器」） -->
@@ -321,6 +335,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260910e"></script>
+<script src="app.js?v=20260910f"></script>
 </body>
 </html>

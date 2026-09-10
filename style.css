@@ -294,3 +294,62 @@ table.grid{width:100%;border-collapse:collapse;font-size:13px}
 
 /* 价格区间连接符（多规格商品：NT$100–200） */
 .pr-sep{display:inline-block;margin:0 2px;opacity:.55;font-weight:400}
+
+/* ====== 数据新鲜度角标（2026-09-10）======
+   卡片左上角标示「这条数据是什么时候抓的」。旧数据可能停在两周前，
+   不标注会让陈旧的月销被当成今天的市场情况。 */
+.pcard-fresh{position:absolute;top:8px;left:8px;z-index:2;font-size:11px;line-height:1;
+  padding:3px 7px;border-radius:20px;background:rgba(255,255,255,.92);color:#5f5e5a;
+  border:1px solid rgba(0,0,0,.07);pointer-events:none;letter-spacing:.2px}
+.pcard-fresh.lv-fresh{color:#2e7d32;background:rgba(238,247,239,.95)}
+.pcard-fresh.lv-aging{color:#8a6d1f;background:rgba(255,249,231,.95)}
+.pcard-fresh.lv-stale{color:#b03030;background:rgba(253,238,238,.95)}
+.pc-check-wrap ~ .pcard-fresh{left:42px}
+
+/* ====== 关注关键词看板（2026-09-10）======
+   一行快捷标签：点一下即筛选，右侧标出当前命中件数与日环比涨跌。 */
+.kw-bar{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:10px 0 2px;
+  padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:#fafbfc}
+.kw-lab{font-size:12px;color:var(--muted);white-space:nowrap}
+.kw-chip{display:inline-flex;align-items:center;gap:5px;font-size:12.5px;line-height:1;
+  padding:6px 9px;border-radius:20px;border:1px solid #dfe3ea;background:#fff;color:#3c4150;
+  cursor:pointer;transition:.14s;white-space:nowrap}
+.kw-chip:hover{border-color:#c3cad6;background:#f7f9fc}
+.kw-chip.on{background:#fff1ef;border-color:#ffcdc6;color:#c0392b;font-weight:600}
+.kw-chip .kw-num{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:#8a8f9c}
+.kw-chip.on .kw-num{color:#c0392b}
+.kw-delta{font-size:11px;line-height:1;padding:2px 5px;border-radius:6px}
+.kw-delta.up{color:#c0392b;background:#fdecec}
+.kw-delta.down{color:#1f7a45;background:#eaf7ef}
+.kw-delta.flat{color:#9aa0ab;background:#f1f3f6}
+.kw-x{font-size:12px;color:#b9bfc9;padding:0 1px;border-radius:4px}
+.kw-x:hover{color:#c0392b;background:#fdecec}
+.kw-add{font-size:12.5px;line-height:1;padding:6px 10px;border-radius:20px;border:1px dashed #cbd3de;
+  background:#fff;color:#5b6472;cursor:pointer}
+.kw-add:hover{border-color:#3b82f6;color:#3b82f6}
+.kw-empty{font-size:12px;color:#9aa0ab}
+
+/* ====== 卡片显示字段面板（2026-09-10）====== */
+.cf-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px 14px;margin:14px 0 6px}
+.cf-item{display:flex;align-items:center;gap:9px;padding:9px 11px;border:1px solid var(--line);
+  border-radius:9px;background:#fafbfc;font-size:13px;cursor:pointer}
+.cf-item:hover{border-color:#c3cad6;background:#f5f8fc}
+.cf-item input{width:16px;height:16px;margin:0;cursor:pointer;accent-color:var(--brand)}
+.cf-item.locked{opacity:.6;cursor:default}
+.cf-hint{font-size:12px;color:var(--muted);margin:4px 0 0}
+
+/* ====== 收藏分组 / 备注（2026-09-10）====== */
+.fav-bar{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:12px 0 14px}
+.fav-chip{font-size:12.5px;line-height:1;padding:6px 11px;border-radius:20px;border:1px solid #dfe3ea;
+  background:#fff;color:#3c4150;cursor:pointer;transition:.14s}
+.fav-chip:hover{border-color:#c3cad6;background:#f7f9fc}
+.fav-chip.on{background:#fff1ef;border-color:#ffcdc6;color:#c0392b;font-weight:600}
+.fav-mgr{margin-top:auto;padding-top:9px;border-top:1px dashed var(--line);display:flex;
+  flex-direction:column;gap:7px}
+.fav-mgr select,.fav-mgr input{font-size:12px;padding:6px 8px;border:1px solid #dfe3ea;
+  border-radius:7px;background:#fff;color:#3c4150;width:100%;box-sizing:border-box}
+.fav-mgr select:focus,.fav-mgr input:focus{outline:none;border-color:#3b82f6;
+  box-shadow:0 0 0 2px rgba(59,130,246,.13)}
+.fav-mgr input::placeholder{color:#b9bfc9}
+.fav-mgr .fav-when{font-size:11px;color:#9aa0ab}
+.fav-tools{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin:0 0 14px}

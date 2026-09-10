@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260910e"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260910f"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -14,7 +14,11 @@
     sort: {},
     lastSyncTs: 0,     // 云端最后同步时间戳（秒），用于「今日录制」板块显示同步状态
     catalogAll: null,   // 完整商品库（data/catalog.json），用于行业大盘/店铺/榜单/收藏的客户端聚合
-    fav: [],            // 收藏的商品 id 列表（localStorage）
+    fav: {},            // 收藏：{ id: { g:分组, n:备注, t:收藏时间(秒) } }（2026-09-10 起为对象，旧数组自动迁移）
+    favGroups: [],      // 用户自定义分组名
+    favFilter: "",      // 收藏面板当前分组筛选（"" = 全部）
+    cardCfg: null,      // 卡片显示字段配置（localStorage 缓存）
+    kws: [],            // 关注关键词：[{ w, t, hist:{ 'YYYY-MM-DD': n } }]
     lib: {
       q: "", cat: "", loc: "", sort: "month",
       min_price: null, max_price: null, min_sold: 0, min_month: 0, min_rating: 0,
@@ -142,7 +146,9 @@
     // 首页直奔商品库：先加载 catalog，再展示
     wireTabs();
     wireProductModal();
-    try { state.fav = JSON.parse(localStorage.getItem("shopee_fav") || "[]"); } catch (e) { state.fav = []; }
+    state.fav = loadFav();
+    state.favGroups = loadFavGroups();
+    state.kws = loadKws();
     loadCatalogAll().then(() => {
       wireLibrary();
       wireToday();
@@ -155,6 +161,9 @@
     wireCalc();
     wireSync();
     wireRecorderStatus();
+    wireCardFields();
+    wireKws();
+    renderKw();
   }
 
   // 日期显示：优先用 catalog 的 generated_at（最新生成时间），否则用 captured_at/catalog_ts，最后 fallback
@@ -559,6 +568,7 @@
   // 录制到该商品，会再次合并进源，网站自动重现（doSync 只推送 pending，不回灌历史）。
   const libSel = { selected: new Set() };
   let LIB_CARD_MODE = false; // 仅选品库网格渲染卡片勾选框，收藏/店铺分析网格不加
+  let FORCE_FAV = false;     // 收藏面板强制显示收藏按钮（避免用户关了按钮后无法取消收藏）
   const LS_GH_TOKEN = "shopee_gh_token_v1"; // 网站写 GitHub 用的 token（与录制器共用同一个 PAT 即可）
   function libItemId(it) {
     // 显示时 normalizeCatalog 已把 id 算成 shopid_itemid；源原始 items 无 id，按同规则兜底
@@ -579,6 +589,85 @@
     if (n > 1e11) n = Math.floor(n / 1000); // 毫秒 → 秒
     return Math.floor(n);
   }
+
+  // ---------- 数据新鲜度（2026-09-10 新增）----------
+  // 为什么要有：录制数据可能停留在两周前（线上最早 8/26）。不标注的话，
+  // 用户会把陈旧月销当成今天的市场情况，选品判断直接跑偏。
+  // 口径：用 last_seen（最后采集时间，秒）——每次录到都会刷新，正好等于「这条数据的新鲜度」。
+  function fmtAgo(ts) {
+    const t = normTs(ts);
+    if (!t) return "";
+    const d = Math.floor(Date.now() / 1000) - t;
+    if (d < 60) return "刚刚";
+    if (d < 3600) return Math.floor(d / 60) + "分钟前";
+    if (d < 86400) return Math.floor(d / 3600) + "小时前";
+    const days = Math.floor(d / 86400);
+    if (days < 30) return days + "天前";
+    return Math.floor(days / 30) + "个月前";
+  }
+  // 分级：1 天内 fresh｜1~7 天 aging｜7 天以上 stale（越旧越刺眼）
+  function freshLevel(ts) {
+    const t = normTs(ts);
+    if (!t) return "unknown";
+    const d = Math.floor(Date.now() / 1000) - t;
+    if (d < 86400) return "fresh";
+    if (d < 7 * 86400) return "aging";
+    return "stale";
+  }
+  // 完整时间（本地时区），用于悬浮提示
+  function fmtStamp(ts) {
+    const t = normTs(ts);
+    if (!t) return "未知";
+    const d = new Date(t * 1000);
+    const p = (n) => String(n).padStart(2, "0");
+    return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate())
+      + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+  }
+  function freshBadgeHtml(it) {
+    if (!cardCfg().fresh) return "";
+    const ts = it.last_seen || it.first_seen;
+    const txt = fmtAgo(ts);
+    if (!txt) return "";
+    return `<span class="pcard-fresh lv-${freshLevel(ts)}" title="最后采集：${fmtStamp(ts)}">${txt}</span>`;
+  }
+
+  // ---------- 卡片显示字段（2026-09-10 新增）----------
+  // 用户口径：卡片只留自己关心的数字（图 / 名 / 价格区间 / 月销 / 总销量），
+  // 关掉其余字段后卡片变矮 → 一屏看更多商品，这才是「一眼看懂」的前提。
+  // 主图与名称是卡片身份，恒显示不可关。默认全开，保证不改动用户现有观感。
+  const CARD_FIELD_KEY = "shopee_cardfields_v1";
+  function cardFieldDefs() {
+    return [
+      { k: "price", label: "价格 / 价格区间" },
+      { k: "sku", label: "主卖 SKU" },
+      { k: "rating", label: "评分" },
+      { k: "sales", label: "周 / 月 / 总销量" },
+      { k: "official", label: "官方标" },
+      { k: "shop", label: "店铺名" },
+      { k: "loc", label: "地区" },
+      { k: "cats", label: "品类标签" },
+      { k: "fresh", label: "数据新鲜度" },
+      { k: "fav", label: "收藏按钮" },
+    ];
+  }
+  function loadCardCfg() {
+    let raw = null;
+    try { raw = JSON.parse(localStorage.getItem(CARD_FIELD_KEY) || "null"); } catch (e) { raw = null; }
+    const cfg = {};
+    cardFieldDefs().forEach((f) => {
+      cfg[f.k] = (raw && typeof raw === "object" && (f.k in raw)) ? !!raw[f.k] : true;
+    });
+    return cfg;
+  }
+  function saveCardCfg(cfg) {
+    try { localStorage.setItem(CARD_FIELD_KEY, JSON.stringify(cfg)); } catch (e) {}
+    if (state) state.cardCfg = cfg;
+  }
+  function cardCfg() {
+    if (!state.cardCfg) state.cardCfg = loadCardCfg();
+    return state.cardCfg;
+  }
+
   function libRerender() {
     // 本地过滤渲染统一入口：有本地数据就走本地，没有也由 clientLibSearch 给出空态/加载态。
     clientLibSearch();
@@ -926,6 +1015,11 @@
     els.search.addEventListener("keydown", (e) => {
       if (e.key === "Enter") { L.q = els.search.value.trim(); go(true); }
     });
+    // 输入过程中同步刷新关注词看板：让「+ 关注『当前词』」即时出现（网格仍等回车/点按钮才重绘）
+    if (els.search && !els.search.__kwInput) {
+      els.search.__kwInput = true;
+      els.search.addEventListener("input", debounce(() => { renderKw(); }, 250));
+    }
     els.cat.addEventListener("change", () => { L.cat = els.cat.value; go(true); });
     els.loc.addEventListener("change", () => { L.loc = els.loc.value; go(true); });
     els.sort.addEventListener("change", () => { L.sort = els.sort.value; go(false); });
@@ -984,84 +1078,10 @@
         loadCatalogAll().then(() => { refreshCurrentView(); showToast("已清空本地删除记录并重新加载"); });
       } catch (e) { tm.textContent = "清空失败：" + (e && e.message); }
     });
-    // 从 GitHub 历史 commit 恢复 catalog.json（解决扩展 today-only 过滤误删历史商品）
-    const restoreBtn = $("#ghRestoreCatalog");
-    if (restoreBtn) restoreBtn.addEventListener("click", async () => {
-      const token = getGhToken();
-      if (!token) { tm.textContent = "请先填写并保存 GitHub Token"; return; }
-      if (!confirm("确定恢复 2026-09-02 07:06 的 335 件商品吗？\n这会覆盖 GitHub 上当前的 catalog.json（6 件）并清空 deleted.json，不可撤销。")) return;
-      tm.textContent = "⏳ 正在读取历史版本…";
-      try {
-        const commit = await ghApiJson("GET", "https://api.github.com/repos/23ccf/shopee-sync/commits/c3089ee", token);
-        const treeSha = commit.commit.tree.sha;
-        const tree = await ghApiJson("GET", "https://api.github.com/repos/23ccf/shopee-sync/git/trees/" + treeSha + "?recursive=1", token);
-        const entry = (tree.tree || []).find((e) => e.path === "catalog.json");
-        if (!entry) throw new Error("历史版本中未找到 catalog.json");
-        const blob = await ghApiJson("GET", "https://api.github.com/repos/23ccf/shopee-sync/git/blobs/" + entry.sha, token);
-        const content = blob.encoding === "base64" ? b64ToUtf8(blob.content) : blob.content;
-        const doc = JSON.parse(content);
-        doc.deleted = {}; // 清空内嵌删除标记
-        // ★ 2026-09-03 关键修复：catalog_ts 必须用「当前时间」，不能沿用历史版本的旧时间戳。
-        //   旧写法用历史 ts(1788332780)，而 GitHub 上被扩展误删后的「6 件版本」ts 更大(1788340969)，
-        //   raceValid 按 catalog_ts 取最大 → 恢复后的 335 件反而被判为"陈旧"，网站继续显示 6 件。
-        const catalogTs = Math.floor(Date.now() / 1000);
-        doc.catalog_ts = catalogTs;
-        const newCatalog = JSON.stringify(doc);
-
-        tm.textContent = "⏳ 正在写回 catalog.json…";
-        const cur = await ghApiJson("GET", "https://api.github.com/repos/23ccf/shopee-sync/contents/catalog.json?ref=main", token);
-        await ghApiJson("PUT", "https://api.github.com/repos/23ccf/shopee-sync/contents/catalog.json", token, {
-          message: "site: restore " + doc.items.length + " items from history",
-          content: utf8ToB64(newCatalog),
-          sha: cur.sha,
-          branch: "main",
-        });
-
-        tm.textContent = "⏳ 正在清空 deleted.json…";
-        const delCur = await ghApiJson("GET", "https://api.github.com/repos/23ccf/shopee-sync/contents/deleted.json?ref=main", token).catch(() => null);
-        await ghApiJson("PUT", "https://api.github.com/repos/23ccf/shopee-sync/contents/deleted.json", token, {
-          message: "site: clear deleted markers after restore",
-          content: utf8ToB64("{}"),
-          sha: delCur ? delCur.sha : undefined,
-          branch: "main",
-        });
-
-        tm.textContent = "⏳ 正在更新 sync.json…";
-        const syncCur = await ghApiJson("GET", "https://api.github.com/repos/23ccf/shopee-sync/contents/sync.json?ref=main", token);
-        await ghApiJson("PUT", "https://api.github.com/repos/23ccf/shopee-sync/contents/sync.json", token, {
-          message: "site: update sync after restore",
-          content: utf8ToB64(JSON.stringify({
-            sync_ts: catalogTs, catalog_ts: catalogTs, running: true, active: true,
-            total_count: doc.items.length, updated_at: new Date().toISOString(),
-          }, null, 2)),
-          sha: syncCur.sha,
-          branch: "main",
-        });
-
-        tm.textContent = "✓ 已恢复 " + doc.items.length + " 件商品，正在刷新视图…";
-        // ★ 立即把恢复结果应用到当前页面 + 落本机缓存，不依赖可能滞后的 CDN，
-        //   并用 DELETE_TS_KEY 作为新鲜度门槛，拒绝仍含旧 6 件数据的镜像副本。
-        try {
-          localStorage.setItem(DELETE_TS_KEY, String(catalogTs));
-          localStorage.removeItem(DELSET_KEY);
-          _serverDeleted = {};
-          _loadedCatalogTs = catalogTs;
-          _appliedSig = "";
-          _libGridSig = "";
-          state.catalogAll = null;
-          state.lib.catalogFallback = null;
-          state.lib._dataReady = false;
-          state.lib.page = 1;
-          applyCatalog(doc);
-          saveCatalogCache(doc);
-          refreshCurrentView();
-        } catch (e) {}
-        showToast("✓ 已恢复 " + doc.items.length + " 件商品，页面已刷新");
-      } catch (e) {
-        tm.textContent = "恢复失败：" + (e && e.message);
-        console.error("[restore]", e);
-      }
-    });
+    // ★ 2026-09-10 移除：原「从历史 commit(c3089ee, 2026-09-02) 恢复 335 件商品」按钮。
+    //   该按钮会把 GitHub 上的 catalog.json 覆盖成两周前的 335 件旧快照，而线上当前已有 491 件
+    //   —— 误点一次即永久丢失较新录制数据，且不可撤销。它诞生的背景（today-only 过滤误删历史商品）
+    //   早已修复，属于该清理的历史遗留。若将来真需要回滚数据，请走 GitHub 的历史版本，不要在站点上放这种按钮。
     // （已无扩展桥接：跨境卫士无法打开本网站，扩展不能代写 GitHub）
     // 卡片勾选框用事件委托（卡片每次重渲染都会重建 DOM）
     $("#libGrid").addEventListener("change", (e) => {
@@ -1158,7 +1178,8 @@
     L.items = r.items || [];
     if (L.items.length) state.lib._dataReady = true;
     const catTotal = r.catalog_total ? `（商品库共 ${fmt(r.catalog_total)} 件）` : "";
-    $("#libCount").textContent = `${fmt(L.total)} 件匹配${catTotal}`;
+    const _tv = normTs(state.catalogAll && state.catalogAll.catalog_ts);
+    $("#libCount").textContent = `${fmt(L.total)} 件匹配${catTotal}` + (_tv ? ` · 数据版本 ${fmtAgo(_tv)}` : "");
     $("#libHint").textContent = "";
     renderLibGrid(L.items);
     renderLibPager();
@@ -1351,8 +1372,12 @@
     if (sig === _libGridSig && $("#libGrid").children.length) return;
     _libGridSig = sig;
     const _hid = state.lib.hiddenByGate || 0;
+    const _ver = fmtAgo(_loadedCatalogTs);
     $("#libCount").textContent = `${fmt(L.total)} 件商品` +
-      (_hid ? ` · 已按「月销≥${state.lib.gateUsed}」隐藏 ${fmt(_hid)} 件低动销` : "");
+      (_hid ? ` · 已按「月销≥${state.lib.gateUsed}」隐藏 ${fmt(_hid)} 件低动销` : "") +
+      (_ver ? ` · 数据版本 ${_ver}` : "");
+    if (_loadedCatalogTs) $("#libCount").title = "整站数据版本：" + fmtStamp(_loadedCatalogTs)
+      + "（云端约每 3–5 分钟刷新一次；单件的新鲜度见卡片左上角）";
     $("#libHint").textContent = "共 " + fmt(items.length) + " 件录制商品 · 支持搜索/筛选/排序";
     renderLibGrid(pageItems);
     renderLibPager();
@@ -1969,7 +1994,7 @@
           : kind === "rating" ? (it.rating + " ★")
           : (it.listed_at ? dateStrUTC8(it.listed_at) : "-");
         const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : (i + 1);
-        const on = isFav(it.id) ? "on" : "";
+        const on = isFav(libItemId(it)) ? "on" : "";
         const cats = (it.cats || []).map((c) => `<span class="pill sm">${esc(c)}</span>`).join(" ");
         return `<tr data-id="${esc(it.id)}" class="clickable">
           <td class="rk">${medal}</td>
@@ -1978,7 +2003,7 @@
           <td class="num">${metric}</td>
           <td>${esc(it.shop || "—")}</td>
           <td>${cats}</td>
-          <td><button class="fav-btn ${on}" data-id="${esc(it.id)}" title="收藏">${on ? "❤" : "🤍"}</button></td>
+          <td><button class="fav-btn ${on}" data-id="${esc(libItemId(it))}" title="收藏">${on ? "❤" : "🤍"}</button></td>
         </tr>`;
       }).join("");
     };
@@ -2127,50 +2152,476 @@
     $("#modal").classList.remove("hidden");
   }
 
-  // ---------- 收藏 ----------
+  // ---------- 关注关键词看板（2026-09-10 新增）----------
+  // 存：shopee_kw_v1 = [{ w:"洞洞鞋", t:加入时间, hist:{ "YYYY-MM-DD": 命中件数 } }]
+  // 价值有两层：① 点一下即筛选，省掉每天重复打字；
+  //            ② 每天记一次命中件数 → 直接看出「这个词的市场在涨还是在跌」，这是选品判断的输入。
+  const KW_KEY = "shopee_kw_v1";
+  const KW_HIST_DAYS = 30;
+  const KW_MAX = 20;
+  // 关键词命中的口径必须与商品库搜索完全一致，否则「看板数字」和「点进去看到的件数」会对不上
+  function libMatch(it, q) {
+    const s = String(q == null ? "" : q).trim().toLowerCase();
+    if (!s) return true;
+    return ((it.name || "") + " " + (it.shop || "") + " " + (it.brand || "") + " " + (it.cats || []).join(" "))
+      .toLowerCase().includes(s);
+  }
+  function kwDayList(n) {
+    const out = [];
+    const base = new Date(todayStrUTC8() + "T00:00:00Z").getTime();
+    for (let i = 0; i < n; i++) out.push(new Date(base - i * 86400000).toISOString().slice(0, 10));
+    return out;
+  }
+  function loadKws() {
+    let raw = null;
+    try { raw = JSON.parse(localStorage.getItem(KW_KEY) || "null"); } catch (e) { raw = null; }
+    const keep = {};
+    kwDayList(KW_HIST_DAYS).forEach((d) => { keep[d] = 1; });
+    const out = [];
+    (Array.isArray(raw) ? raw : []).forEach((x) => {
+      const w = String((x && x.w) || "").trim();
+      if (!w || w.length > 30) return;
+      const hist = {};
+      const src = (x && x.hist && typeof x.hist === "object") ? x.hist : {};
+      Object.keys(src).forEach((d) => {
+        const n = Number(src[d]);
+        if (keep[d] && isFinite(n) && n >= 0) hist[d] = n;   // 顺手丢掉超出 30 天的历史，避免无限增长
+      });
+      out.push({ w: w, t: normTs(x && x.t) || 0, hist: hist });
+    });
+    return out;
+  }
+  function saveKws() {
+    try { localStorage.setItem(KW_KEY, JSON.stringify(state.kws || [])); } catch (e) {}
+  }
+  function kwIndexOf(w) {
+    const s = String(w == null ? "" : w).trim();
+    return (state.kws || []).findIndex((k) => k.w === s);
+  }
+  function kwAdd(w) {
+    const s = String(w == null ? "" : w).trim();
+    if (!s) { showToast("先在搜索框输入一个词，再点关注"); return false; }
+    if (s.length > 30) { showToast("关键词太长（最多 30 字）"); return false; }
+    if (kwIndexOf(s) >= 0) { showToast("「" + s + "」已经在关注列表里了"); return false; }
+    if ((state.kws || []).length >= KW_MAX) { showToast("关注词最多 " + KW_MAX + " 个，先取消几个吧"); return false; }
+    state.kws.push({ w: s, t: Math.floor(Date.now() / 1000), hist: {} });
+    saveKws();
+    refreshKwStats();
+    renderKw();
+    showToast("已关注「" + s + "」，每天会自动记下它的商品数变化");
+    return true;
+  }
+  function kwRemove(w) {
+    const i = kwIndexOf(w);
+    if (i < 0) return;
+    const name = state.kws[i].w;
+    state.kws.splice(i, 1);
+    saveKws();
+    renderKw();
+    showToast("已取消关注「" + name + "」");
+  }
+  // 某关键词当前命中多少件（口径同商品库搜索）
+  function kwCountOf(w) {
+    const items = (state.catalogAll && state.catalogAll.items) || [];
+    if (!items.length) return null;
+    let n = 0;
+    for (let i = 0; i < items.length; i++) if (libMatch(items[i], w)) n++;
+    return n;
+  }
+  // 每天都给关注词记一次命中数：同一天内以最后一次为准（幂等），不写脏数据
+  function refreshKwStats() {
+    const kws = state.kws || [];
+    if (!kws.length || !state.catalogAll) return;
+    const d = todayStrUTC8();
+    let dirty = false;
+    kws.forEach((k) => {
+      const n = kwCountOf(k.w);
+      if (n == null) return;
+      if (k.hist[d] !== n) { k.hist[d] = n; dirty = true; }
+    });
+    if (dirty) saveKws();
+  }
+  function kwPrevDay(k) {
+    const today = todayStrUTC8();
+    const ds = Object.keys(k.hist || {}).filter((x) => x < today).sort();
+    if (!ds.length) return null;
+    const d = ds[ds.length - 1];
+    return { d: d, n: k.hist[d] };
+  }
+  function renderKw() {
+    const bar = $("#kwBar");
+    if (!bar) return;
+    const kws = state.kws || [];
+    // 以搜索框实时内容为准：用户刚敲完还没回车时，「+ 关注」也应立刻出现
+    const _box = $("#libSearch");
+    const cur = String(((_box && _box.value) || state.lib.q || "")).trim();
+    const parts = ['<span class="kw-lab">关注词</span>'];
+    if (!kws.length) {
+      parts.push('<span class="kw-empty">还没有关注词。搜一个词后点右侧「+ 关注」，即可一键筛选，并看到它每天的商品数涨跌。</span>');
+    }
+    kws.forEach((k) => {
+      const on = !!cur && cur.toLowerCase() === k.w.toLowerCase();
+      const n = kwCountOf(k.w);
+      const prev = kwPrevDay(k);
+      let delta = "";
+      if (n != null && prev && prev.n != null) {
+        const diff = n - prev.n;
+        const cls = diff > 0 ? "up" : (diff < 0 ? "down" : "flat");
+        const sign = diff > 0 ? "\u2191" : (diff < 0 ? "\u2193" : "");
+        delta = '<span class="kw-delta ' + cls + '" title="对比 ' + prev.d + '：' + prev.n + ' 件 \u2192 今天 ' + n + ' 件">'
+          + sign + Math.abs(diff) + '</span>';
+      }
+      parts.push('<span class="kw-chip' + (on ? " on" : "") + '" data-w="' + esc(k.w) + '" title="点击筛选「' + esc(k.w) + '」">'
+        + esc(k.w)
+        + '<span class="kw-num">' + (n == null ? "\u2014" : fmt(n)) + '</span>'
+        + delta
+        + '<span class="kw-x" data-del="' + esc(k.w) + '" title="取消关注">\u00d7</span>'
+        + '</span>');
+    });
+    if (cur && kwIndexOf(cur) < 0) {
+      parts.push('<button class="kw-add" id="kwAdd">+ 关注「' + esc(cur) + '」</button>');
+    }
+    bar.innerHTML = parts.join("");
+  }
+  function wireKws() {
+    const bar = $("#kwBar");
+    if (!bar || bar.__kwBound) return;
+    bar.__kwBound = true;
+    bar.addEventListener("click", (e) => {
+      const del = e.target.closest(".kw-x");
+      if (del) { e.preventDefault(); e.stopPropagation(); kwRemove(del.getAttribute("data-del")); return; }
+      // 以搜索框当前值取词：用户常常是「刚敲完就直接点关注」，此时 state.lib.q 还是旧的
+      if (e.target.closest("#kwAdd")) {
+        const _b = $("#libSearch");
+        kwAdd(String(((_b && _b.value) || state.lib.q || "")).trim());
+        return;
+      }
+      const chip = e.target.closest(".kw-chip");
+      if (!chip) return;
+      const w = chip.getAttribute("data-w") || "";
+      const box = $("#libSearch");
+      if (box) box.value = w;
+      state.lib.q = w;
+      state.lib.page = 1;
+      _libGridSig = "";
+      libRerender();
+      renderKw();
+    });
+  }
+
+  // ---------- 卡片显示字段面板（2026-09-10 新增）----------
+  function wireCardFields() {
+    const btn = $("#cardFieldBtn");
+    const panel = $("#cardFieldPanel");
+    if (!btn || !panel) return;
+    const grid = $("#cardFieldGrid");
+    function paint() {
+      const cfg = cardCfg();
+      const rows = ['<label class="cf-item locked" title="卡片的身份信息，不可关闭"><input type="checkbox" checked disabled> 主图 + 商品名</label>'];
+      cardFieldDefs().forEach((f) => {
+        rows.push('<label class="cf-item"><input type="checkbox" data-k="' + f.k + '"' + (cfg[f.k] ? " checked" : "") + "> " + f.label + "</label>");
+      });
+      grid.innerHTML = rows.join("");
+    }
+    const close = () => panel.classList.add("hidden");
+    if (!btn.__cfBound) {
+      btn.__cfBound = true;
+      btn.addEventListener("click", () => { paint(); panel.classList.remove("hidden"); });
+    }
+    const c1 = $("#cardFieldClose");
+    if (c1 && !c1.__cfBound) { c1.__cfBound = true; c1.addEventListener("click", close); }
+    const c2 = $("#cardFieldClose2");
+    if (c2 && !c2.__cfBound) { c2.__cfBound = true; c2.addEventListener("click", close); }
+    const rs = $("#cardFieldReset");
+    if (rs && !rs.__cfBound) {
+      rs.__cfBound = true;
+      rs.addEventListener("click", () => {
+        const cfg = {};
+        cardFieldDefs().forEach((f) => { cfg[f.k] = true; });
+        saveCardCfg(cfg);
+        paint();
+        repaintAllCards();
+        showToast("已恢复默认：卡片显示全部字段");
+      });
+    }
+    if (grid && !grid.__cfGridBound) {
+      grid.__cfGridBound = true;
+      grid.addEventListener("change", (e) => {
+        const cb = e.target.closest("input[data-k]");
+        if (!cb) return;
+        const cfg = cardCfg();
+        cfg[cb.getAttribute("data-k")] = cb.checked;
+        saveCardCfg(cfg);
+        repaintAllCards();
+      });
+    }
+  }
+  // 字段配置变了 → 清掉网格指纹强制重建。指纹里没有这份配置，
+  // 不清的话 libRerender 会认为「画面没变」而跳过重绘，用户会觉得「点了没反应」。
+  function repaintAllCards() {
+    _libGridSig = "";
+    libRerender();
+    renderFav();
+  }
+
+  // ---------- 收藏（2026-09-10 升级：分组 + 备注 + 导出选品清单）----------
+  // 存储：新键 shopee_fav_v2 = { id: { g:分组, n:备注, t:收藏时间(秒) } }
+  //   旧键 shopee_fav（纯 id 数组）**只读不改**，仅作迁移源 —— 万一新版有问题，
+  //   回滚旧代码仍能读到完整收藏，不存在「迁移把数据改丢」的可能。
+  const FAV_KEY = "shopee_fav_v2";
+  const FAV_LEGACY_KEY = "shopee_fav";
+  const FAV_GROUP_KEY = "shopee_fav_groups_v1";
+  const FAV_PRESET_GROUPS = ["重点", "待观察", "竞品参考"];
+
+  function favNorm(id) { return String(id == null ? "" : id); }
+  function favSave() {
+    try { localStorage.setItem(FAV_KEY, JSON.stringify(state.fav)); } catch (e) {}
+  }
+  function favSaveGroups() {
+    try { localStorage.setItem(FAV_GROUP_KEY, JSON.stringify(state.favGroups)); } catch (e) {}
+  }
+  // 读取收藏：优先新格式；没有新格式时从旧数组迁移一次（旧键保持原样不动）
+  function loadFav() {
+    let raw = null;
+    try { raw = JSON.parse(localStorage.getItem(FAV_KEY) || "null"); } catch (e) { raw = null; }
+    const obj = {};
+    if (raw && !Array.isArray(raw) && typeof raw === "object") {
+      Object.keys(raw).forEach((k) => {
+        if (!k) return;
+        const v = raw[k];
+        obj[k] = (v && typeof v === "object")
+          ? { g: String(v.g || ""), n: String(v.n || ""), t: normTs(v.t) || 0 }
+          : { g: "", n: "", t: 0 };  // 容错：值不是对象也不丢这条收藏
+      });
+      return obj;
+    }
+    let legacy = [];
+    try { legacy = JSON.parse(localStorage.getItem(FAV_LEGACY_KEY) || "[]"); } catch (e) { legacy = []; }
+    if (Array.isArray(legacy) && legacy.length) {
+      const now = Math.floor(Date.now() / 1000);
+      legacy.forEach((id) => { const s = favNorm(id); if (s) obj[s] = { g: "", n: "", t: now }; });
+      try { localStorage.setItem(FAV_KEY, JSON.stringify(obj)); } catch (e) {}
+      console.log("[fav] 已从旧格式迁移 " + Object.keys(obj).length + " 件收藏（旧键 shopee_fav 保持原样）");
+    }
+    return obj;
+  }
+  function loadFavGroups() {
+    let g = null;
+    try { g = JSON.parse(localStorage.getItem(FAV_GROUP_KEY) || "null"); } catch (e) { g = null; }
+    const out = [];
+    const seen = {};
+    const push = (x) => {
+      const s = String(x == null ? "" : x).trim();
+      if (!s || s.length > 20 || seen[s]) return;
+      seen[s] = 1; out.push(s);
+    };
+    (Array.isArray(g) ? g : []).forEach(push);
+    // 收藏数据里出现过的分组也补进来，避免「分组名只存在于数据里、筛选栏却看不到」
+    Object.keys(state.fav || {}).forEach((k) => push(state.fav[k] && state.fav[k].g));
+    return out;
+  }
+  function favList() { return Object.keys(state.fav || {}); }
+  function favCount() { return favList().length; }
+  function isFav(id) { return !!state.fav[favNorm(id)]; }
+  function favAdd(id) {
+    const k = favNorm(id);
+    if (!k) return;
+    if (!state.fav[k]) {
+      // 正处在某个分组筛选下时收藏 → 直接归入该分组，符合直觉
+      const g = (state.favFilter && state.favFilter !== "__none") ? state.favFilter : "";
+      state.fav[k] = { g: g, n: "", t: Math.floor(Date.now() / 1000) };
+    }
+    favSave();
+  }
+  function favRemove(id) { delete state.fav[favNorm(id)]; favSave(); }
+  // 所有可选分组（预设 + 自定义 + 数据里出现过的）
+  function favGroupOptions() {
+    const out = [];
+    const seen = {};
+    const push = (x) => {
+      const s = String(x == null ? "" : x).trim();
+      if (!s || s.length > 20 || seen[s]) return;
+      seen[s] = 1; out.push(s);
+    };
+    FAV_PRESET_GROUPS.forEach(push);
+    (state.favGroups || []).forEach(push);
+    Object.keys(state.fav || {}).forEach((k) => push(state.fav[k] && state.fav[k].g));
+    return out;
+  }
   function toggleFav(id) {
-    const i = state.fav.indexOf(id);
-    if (i >= 0) state.fav.splice(i, 1); else state.fav.push(id);
-    try { localStorage.setItem("shopee_fav", JSON.stringify(state.fav)); } catch (e) {}
+    if (isFav(id)) favRemove(id); else favAdd(id);
     refreshFavButtons();
     renderFav();
   }
   function refreshFavButtons() {
     $$(".fav-btn").forEach((b) => {
-      const on = state.fav.includes(b.dataset.id);
+      const on = isFav(b.dataset.id);
       b.classList.toggle("on", on);
       b.textContent = on ? "❤" : "🤍";
+      b.title = on ? "取消收藏" : "收藏";
     });
   }
-  function isFav(id) { return state.fav.includes(id); }
-  function wireFav() { renderFav(); }
+  function wireFav() {
+    const bar = $("#favBar");
+    if (bar && !bar.__favBound) {
+      bar.__favBound = true;
+      bar.addEventListener("click", (e) => {
+        const chip = e.target.closest(".fav-chip");
+        if (!chip) return;
+        if (chip.id === "favNewGroup") {
+          const name = String(window.prompt("新建分组名称（最多 20 字）", "") || "").trim();
+          if (!name) return;
+          if (name.length > 20) { showToast("分组名最多 20 个字"); return; }
+          if (!state.favGroups.includes(name)) { state.favGroups.push(name); favSaveGroups(); }
+          state.favFilter = name;
+          renderFav();
+          showToast("已新建分组「" + name + "」，此刻收藏会自动归入");
+          return;
+        }
+        state.favFilter = chip.dataset.g || "";
+        renderFav();
+      });
+    }
+    const grid = $("#favGrid");
+    if (grid && !grid.__favBound) {
+      grid.__favBound = true;
+      const commit = (t) => {
+        const id = t.dataset ? t.dataset.id : null;
+        if (!id || !state.fav[id]) return false;
+        if (t.classList.contains("fav-g")) state.fav[id].g = t.value;
+        else if (t.classList.contains("fav-note")) state.fav[id].n = String(t.value || "").slice(0, 120);
+        else return false;
+        favSave();
+        return true;
+      };
+      // change 在「改完切走焦点」时触发，足够覆盖分组下拉与备注输入
+      grid.addEventListener("change", (e) => {
+        const t = e.target;
+        if (!t || !t.classList || !t.dataset || !t.dataset.id) return;
+        if (!commit(t)) return;
+        if (t.classList.contains("fav-g")) { renderFav(); showToast(t.value ? "已移到「" + t.value + "」" : "已移到未分组"); }
+        else showToast("备注已保存");
+      });
+    }
+    const ex = $("#favExport");
+    if (ex && !ex.__favBound) { ex.__favBound = true; ex.addEventListener("click", exportFavCsv); }
+    renderFav();
+  }
   function renderFav() {
     const el = $("#favGrid");
     const empty = $("#favEmpty");
+    const bar = $("#favBar");
+    if (!el || !empty) return;
     if (!state.catalogAll) { el.innerHTML = '<div class="empty">暂无可用的商品库数据。</div>'; return; }
-    const items = (state.catalogAll.items || []).filter((i) => state.fav.includes(i.id));
-    // ★ 2026-09-10：收藏的商品若月销跌破门槛会被门槛隐藏。收藏是用户手动标记的，
-    //   悄悄消失最让人困惑（「我收藏的东西呢？」），所以这里显式告知被隐藏了几件。
-    const rawAll = state.catalogAll._rawItems || [];
-    const allFav = rawAll.filter((i) => state.fav.includes(libItemId(i)));
-    const hiddenFav = Math.max(0, allFav.length - items.length);
-    const note = hiddenFav
-      ? `<b>另有 ${fmt(hiddenFav)} 件收藏因月销低于 ${state.lib.gateUsed} 被门槛隐藏</b>。`
-        + `把筛选栏「月销门槛」切成「全部」即可看到。`
+    const ids = favList();
+    const visible = {};
+    (state.catalogAll.items || []).forEach((i) => { visible[libItemId(i)] = i; });
+    const anyItem = {};
+    (state.catalogAll._rawItems || []).forEach((i) => { anyItem[libItemId(i)] = i; });
+    const rows = ids.map((id) => ({
+      id: id, it: visible[id] || null, raw: anyItem[id] || null,
+      info: state.fav[id] || { g: "", n: "", t: 0 },
+    }));
+    const hiddenByGate = rows.filter((r) => !r.it && r.raw).length;
+
+    if (bar) {
+      const cnt = {};
+      rows.forEach((r) => { const g = r.info.g || ""; cnt[g] = (cnt[g] || 0) + 1; });
+      const parts = [`<button class="fav-chip${state.favFilter === "" ? " on" : ""}" data-g="">全部 ${fmt(rows.length)}</button>`];
+      if (cnt[""]) parts.push(`<button class="fav-chip${state.favFilter === "__none" ? " on" : ""}" data-g="__none">未分组 ${fmt(cnt[""])}</button>`);
+      favGroupOptions().forEach((g) => {
+        if (!cnt[g]) return;
+        parts.push(`<button class="fav-chip${state.favFilter === g ? " on" : ""}" data-g="${esc(g)}">${esc(g)} ${fmt(cnt[g])}</button>`);
+      });
+      parts.push(`<button class="fav-chip" id="favNewGroup" title="新建一个分组，之后收藏的商品可归入其中">+ 新建分组</button>`);
+      bar.innerHTML = parts.join("");
+    }
+
+    const f = state.favFilter;
+    const pick = rows.filter((r) => {
+      if (!f) return true;
+      const g = r.info.g || "";
+      return f === "__none" ? !g : g === f;
+    });
+    const items = pick.filter((r) => r.it).map((r) => r.it);
+    const gateNote = hiddenByGate
+      ? `另有 <b>${fmt(hiddenByGate)} 件收藏因月销低于 ${state.lib.gateUsed} 被门槛隐藏</b>。把筛选栏「月销门槛」切成「全部」即可看到。`
       : "";
+
     if (!items.length) {
       el.innerHTML = "";
       empty.style.display = "block";
-      empty.innerHTML = state.fav.length
-        ? (note || "收藏的商品当前都不在商品库中（可能已被删除）。")
-        : "还没有收藏。在「商品库」任意商品卡片点 ❤ 即可加入。";
+      let msg;
+      if (!rows.length) msg = "还没有收藏。在「商品库」点卡片上的 🤍 即可收藏，之后可在这里分组、写备注、导出选品清单。";
+      else if (f) msg = "该分组下没有可显示的商品。";
+      else msg = "收藏的商品当前都不在商品库中（可能已被删除）。";
+      empty.innerHTML = gateNote ? msg + " " + gateNote : msg;
       return;
     }
-    empty.style.display = hiddenFav ? "block" : "none";
-    if (hiddenFav) empty.innerHTML = note;
-    el.innerHTML = items.map((it) => pcardHtml(it)).join("");
+    empty.style.display = hiddenByGate ? "block" : "none";
+    if (hiddenByGate) empty.innerHTML = gateNote;
+
+    FORCE_FAV = true;
+    try {
+      const gopts = favGroupOptions();
+      el.innerHTML = items.map((it) => {
+        const id = libItemId(it);
+        const info = state.fav[id] || {};
+        const curG = info.g || "";
+        const opts = [`<option value=""${curG ? "" : " selected"}>未分组</option>`]
+          .concat(gopts.map((g) => `<option value="${esc(g)}"${curG === g ? " selected" : ""}>${esc(g)}</option>`))
+          .join("");
+        const extra = `<div class="fav-mgr">
+          <select class="fav-g" data-id="${esc(id)}" title="把这个商品归到哪个分组">${opts}</select>
+          <input class="fav-note" data-id="${esc(id)}" type="text" maxlength="120" value="${esc(info.n || "")}" placeholder="备注：为什么收藏它？">
+          <div class="fav-when">收藏于 ${info.t ? fmtStamp(info.t) : "较早"}</div>
+        </div>`;
+        return pcardHtml(it, extra);
+      }).join("");
+    } finally { FORCE_FAV = false; }
     refreshFavButtons();
   }
+  // 导出选品清单：收藏连同分组、备注一起导出，直接能拿去比价 / 找货
+  function exportFavCsv() {
+    const ids = favList();
+    if (!ids.length) { showToast("还没有收藏，先收藏几件商品吧"); return; }
+    const visible = {}, anyItem = {};
+    ((state.catalogAll && state.catalogAll.items) || []).forEach((i) => { visible[libItemId(i)] = i; });
+    ((state.catalogAll && state.catalogAll._rawItems) || []).forEach((i) => { anyItem[libItemId(i)] = i; });
+    const head = ["商品名", "价格(NT$)", "价格上限(NT$)", "月销", "周销", "累计销量", "评分", "店铺", "地区", "商品链接", "分组", "备注", "收藏时间"];
+    const out = [head.map(csvCell).join(",")];
+    ids.forEach((id) => {
+      const it = visible[id] || anyItem[id];
+      const seg = String(id).split("_");
+      const shopid = (it && it.shopid != null) ? it.shopid : seg[0];
+      const itemid = (it && it.itemid != null) ? it.itemid : seg[1];
+      const info = state.fav[id] || {};
+      out.push([
+        it ? (it.name || "") : "（已不在录制库中）",
+        (it && it.price != null) ? String(Math.round(it.price)) : "",
+        (it && it.price_max && it.price_max > it.price) ? String(Math.round(it.price_max)) : "",
+        (it && it.month_sold != null) ? String(it.month_sold) : "",
+        (it && it.week_sold != null) ? String(it.week_sold) : "",
+        (it && it.sold_total != null) ? String(it.sold_total) : "",
+        (it && it.rating) ? String(it.rating) : "",
+        it ? (it.shop || "") : "",
+        it ? (it.loc || "") : "",
+        "https://shopee.tw/product/" + shopid + "/" + itemid,
+        info.g || "", info.n || "",
+        info.t ? fmtStamp(info.t) : "",
+      ].map(csvCell).join(","));
+    });
+    const blob = new Blob(["\ufeff" + out.join("\r\n")], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "虾皮选品清单-" + new Date().toISOString().slice(0, 10) + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    showToast("已导出选品清单：" + ids.length + " 件（含分组与备注）");
+  }
+
   // 价格展示：多规格商品显示区间「NT$100–200」，普通商品显示单一价格。
   // 数据来源：录制器的 price（下限）/ price_max（上限），后者缺失就不显示区间。
   function priceHtml(it) {
@@ -2182,28 +2633,32 @@
     return `${cur}${fmt(lo)}${warn}`;
   }
 
-  function pcardHtml(it) {
+  function pcardHtml(it, extraHtml) {
     const cur = state.data ? state.data.currency : "NT$";
-    const on = isFav(it.id) ? "on" : "";
+    const cfg = cardCfg();
+    const on = isFav(libItemId(it)) ? "on" : "";
     const cats = (it.cats || []).map((c) => `<span class="pill sm">${esc(c)}</span>`).join(" ");
     const img = it.img
       ? `<img class="pcard-img" src="${esc(thumbUrl(proxyImg(it.img)))}" referrerpolicy="no-referrer" loading="lazy" decoding="async" alt="" onerror="__imgFallback(this)">`
       : `<div class="pcard-img pcard-img-empty">📦</div>`;
+    const meta = [];
+    if (cfg.rating) meta.push(`<span class="stars" title="评分 ${it.rating}">${starStr(it.rating)} <b>${it.rating}</b></span>`);
+    if (cfg.sales) meta.push(`<span class="muted" title="周/月/总销量">周${fmt(it.week_sold)} · 月${fmtMonth(it.month_sold)} · 总${fmt(it.sold_total)}</span>`);
+    if (cfg.official && it.official) meta.push('<span class="badge official">官方</span>');
+    const where = [cfg.shop ? esc(it.shop || "—") : "", cfg.loc ? esc((it.loc || "").slice(0, 6)) : ""].filter(Boolean).join(" · ");
     return `<div class="pcard" data-id="${esc(libItemId(it))}">
       ${LIB_CARD_MODE ? `<label class="pc-check-wrap" title="选择此商品"><input type="checkbox" class="pcard-check" data-id="${esc(libItemId(it))}" ${libSel.selected.has(libItemId(it)) ? "checked" : ""}></label>` : ""}
-      <button class="fav-btn ${on}" data-id="${esc(it.id)}" title="收藏">${on ? "❤" : "🤍"}</button>
+      ${(cfg.fav || FORCE_FAV) ? `<button class="fav-btn ${on}" data-id="${esc(libItemId(it))}" title="${on ? "取消收藏" : "收藏"}">${on ? "❤" : "🤍"}</button>` : ""}
       ${img}
+      ${freshBadgeHtml(it)}
       <div class="pcard-body">
         <div class="pcard-name" title="${esc(it.name)}">${esc(it.name)}</div>
-        <div class="pcard-price">${priceHtml(it)}</div>
-        <div class="pcard-sku">主卖SKU：${esc(it.main_sku && it.main_sku.name ? it.main_sku.name : "—")}${it.main_sku && it.main_sku.price != null ? " · " + cur + fmt(Math.round(it.main_sku.price)) : ""}</div>
-        <div class="pcard-meta">
-          <span class="stars" title="评分 ${it.rating}">${starStr(it.rating)} <b>${it.rating}</b></span>
-          <span class="muted" title="周/月/总销量">周${fmt(it.week_sold)} · 月${fmtMonth(it.month_sold)} · 总${fmt(it.sold_total)}</span>
-          ${it.official ? '<span class="badge official">官方</span>' : ""}
-        </div>
-        <div class="pcard-shop">${esc(it.shop || "—")} · ${esc((it.loc || "").slice(0, 6))}</div>
-        <div class="pcard-cats">${cats}</div>
+        ${cfg.price ? `<div class="pcard-price">${priceHtml(it)}</div>` : ""}
+        ${cfg.sku ? `<div class="pcard-sku">主卖SKU：${esc(it.main_sku && it.main_sku.name ? it.main_sku.name : "—")}${it.main_sku && it.main_sku.price != null ? " · " + cur + fmt(Math.round(it.main_sku.price)) : ""}</div>` : ""}
+        ${meta.length ? `<div class="pcard-meta">${meta.join("")}</div>` : ""}
+        ${where ? `<div class="pcard-shop">${where}</div>` : ""}
+        ${cfg.cats && cats ? `<div class="pcard-cats">${cats}</div>` : ""}
+        ${extraHtml || ""}
       </div>
     </div>`;
   }
@@ -2777,6 +3232,8 @@
     });
     state.lib.cats = Object.keys(cats).sort((a, b) => cats[b] - cats[a]);
     state.lib.locs = Object.keys(locs).sort((a, b) => locs[b] - locs[a]);
+    // 数据到位后：给关注词记一次今日命中数（同一天幂等），并刷新看板
+    try { refreshKwStats(); renderKw(); } catch (e) {}
     return true;
   }
 
