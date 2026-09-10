@@ -18,8 +18,9 @@ __pycache__/
 /data/catalog*.json
 /data/deleted.json
 /data/sync.json
-/data/analysis.json
 /data/products.json
+# analysis.json 是站点默认配置（非真实商品数据），必须随站点一起部署，否则首页会报「无法加载分析数据」
+!/data/analysis.json
 
 # --- 用户私有配置 ---
 *.token
