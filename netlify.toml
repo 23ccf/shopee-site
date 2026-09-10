@@ -1,0 +1,27 @@
+[build]
+  # 纯静态站点，无需构建命令
+  command = ""
+  publish = "."
+
+# data 目录是运行时数据（含数据源配置），不要缓存
+[[headers]]
+  for = "/data/*"
+  [headers.values]
+    Cache-Control = "no-cache, no-store, must-revalidate"
+
+# JS/CSS 短缓存（5 分钟），方便改完立刻生效
+[[headers]]
+  for = "/*.js"
+  [headers.values]
+    Cache-Control = "public, max-age=300, must-revalidate"
+
+[[headers]]
+  for = "/*.css"
+  [headers.values]
+    Cache-Control = "public, max-age=300, must-revalidate"
+
+# SPA 兜底（本站是单页，所有路径都回落到 index.html）
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
