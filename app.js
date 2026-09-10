@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260910g"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260910h"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -627,6 +627,8 @@
         if (tr.dataset.id) return openLibItem(tr.dataset.id);
         return;
       }
+      // 「去重录」是个真链接，不能顺手把详情弹窗也打开（否则点了就跳页面 + 弹窗，双份打扰）
+      if (e.target.closest(".pcard-recheck")) return;
       const card = e.target.closest(".pcard");
       if (card && card.dataset.id && !e.target.closest(".pcard-check")) return openLibItem(card.dataset.id);
     });
@@ -822,6 +824,21 @@
     const txt = fmtAgo(ts);
     if (!txt) return "";
     return `<span class="pcard-fresh lv-${freshLevel(ts)}" title="最后采集：${fmtStamp(ts)}">${txt}</span>`;
+  }
+  // 陈旧数据的「出路」。
+  // 为什么要有：新鲜度角标 >7 天转红，但那是**提醒**不是**动作**——用户看到红色之后无事可做，
+  // 只能干瞪眼。这里给陈旧商品一个零风控入口：打开虾皮原商品页，录制器被动录到就会刷新这条数据。
+  // 刻意只做「开一个页面」：不主动发请求、不批量翻页、不后台轮询，避免触发虾皮风控。
+  function recheckHtml(it) {
+    if (!cardCfg().fresh) return "";
+    const ts = normTs(it.last_seen || it.first_seen);
+    if (!ts) return "";
+    if (freshLevel(ts) !== "stale") return "";           // 只有 >7 天且标红的商品才给入口
+    const url = String(it.url || "");
+    if (!/^https:\/\/shopee\.tw\/product\/\d+\/\d+/.test(url)) return "";
+    const days = Math.floor((Date.now() / 1000 - ts) / 86400);
+    return `<a class="pcard-recheck" href="${esc(url)}" target="_blank" rel="noopener noreferrer"`
+      + ` title="打开虾皮原商品页，录制器会自动刷新这条数据">↻ 已 ${days} 天，去重录</a>`;
   }
 
   // ---------- 卡片显示字段（2026-09-10 新增）----------
@@ -2870,6 +2887,7 @@
         ${meta.length ? `<div class="pcard-meta">${meta.join("")}</div>` : ""}
         ${where ? `<div class="pcard-shop">${where}</div>` : ""}
         ${cfg.cats && cats ? `<div class="pcard-cats">${cats}</div>` : ""}
+        ${recheckHtml(it)}
         ${extraHtml || ""}
       </div>
     </div>`;

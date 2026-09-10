@@ -305,6 +305,12 @@ table.grid{width:100%;border-collapse:collapse;font-size:13px}
 .pcard-fresh.lv-aging{color:#8a6d1f;background:rgba(255,249,231,.95)}
 .pcard-fresh.lv-stale{color:#b03030;background:rgba(253,238,238,.95)}
 .pc-check-wrap ~ .pcard-fresh{left:42px}
+/* 陈旧数据的出路（2026-09-10）：>7 天的商品在卡片底部给一个「去重录」链接。
+   红色角标只说明「这数据旧了」，这个链接才让它有地方可去 —— 打开原商品页即可被录制器被动刷新。 */
+.pcard-recheck{display:inline-block;margin-top:6px;font-size:12px;line-height:1;
+  padding:5px 9px;border-radius:6px;text-decoration:none;border:1px dashed #d8b48a;
+  color:#a35a12;background:rgba(255,249,240,.9);transition:background .15s,color .15s}
+.pcard-recheck:hover{background:#a35a12;color:#fff;border-color:#a35a12;border-style:solid}
 
 /* ====== 关注关键词看板（2026-09-10）======
    一行快捷标签：点一下即筛选，右侧标出当前命中件数与日环比涨跌。 */
