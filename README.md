@@ -2,7 +2,7 @@
 
 纯前端静态站。从 GitHub 仓库读取选品数据，按月销 / 价格 / 店铺筛选排序，无需后端、无需登录。
 
-**在线体验**：https://o034jesx01n93239ge03t60l5r3z32qu.bj2.agentos-app.net
+**在线体验**：https://23ccf.github.io/shopee-site/
 
 ---
 
