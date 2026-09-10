@@ -1,0 +1,34 @@
+# --- 备份与临时 ---
+*.bak
+*.bak-*
+*.tmp
+*.swp
+*.swo
+*~
+
+# --- 临时目录 ---
+/tmp/
+__pycache__/
+
+# --- 运行时数据（真实商品数据，不要进代码仓库）---
+# 商品数据存放于独立的数据仓库（如 23ccf/shopee-sync），本仓库只放配置模板 source.json
+/data/*
+!/data/source.json
+/data/_live_app.js
+/data/catalog*.json
+/data/deleted.json
+/data/sync.json
+/data/analysis.json
+/data/products.json
+
+# --- 用户私有配置 ---
+*.token
+.env
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+desktop.ini

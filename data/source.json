@@ -1,0 +1,14 @@
+{
+  "catalog_url": "https://raw.githubusercontent.com/23ccf/shopee-sync/main/catalog.json",
+  "sync_url": "https://raw.githubusercontent.com/23ccf/shopee-sync/main/sync.json",
+  "catalog_path": "catalog.json",
+  "api_token": "",
+  "gitee": {
+    "owner": "23ccf",
+    "repo": "shopee-sync",
+    "branch": "master",
+    "catalogPath": "catalog.json",
+    "syncPath": "sync.json"
+  },
+  "updated": "2026-09-09 12:00:00"
+}

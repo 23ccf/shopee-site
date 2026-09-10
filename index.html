@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>虾皮台湾选品看板</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">🛒</span>
+    <div>
+      <h1>虾皮台湾选品看板</h1>
+      <div class="sub" id="subtitle">加载中…</div>
+    </div>
+  </div>
+  <div class="top-actions">
+    <button id="manualSyncBtn" class="btn-sync" title="立即从录制器拉取最新商品（约 3 秒内完成）">☁ 立即同步</button>
+    <span id="syncBadge" class="badge sync-off">☁ 同步待机</span>
+    <span id="recBadge" class="badge rec-off">录制停止</span>
+    <span id="modeBadge" class="badge">--</span>
+    <span id="dataDate" class="date">--</span>
+    <span id="appVersionChip" style="font-size:11px;color:#fff;background:#6366f1;padding:2px 7px;border-radius:4px;margin-left:8px;font-weight:600;letter-spacing:0.3px;" title="网站代码版本号（用于一眼确认是否加载到新代码）">v--</span>
+  </div>
+</header>
+
+<div id="errorBox" class="error-box hidden">
+  无法加载分析数据（data/analysis.json）。请先运行 <code>python shopee_tw_selector.py</code> 生成数据。
+</div>
+
+<main class="wrap" id="app" style="display:none">
+
+  <!-- 标签页 -->
+  <nav class="tabs" id="tabs">
+    <button class="tab-btn on" data-tab="library">📦 全部商品</button>
+    <button class="tab-btn" data-tab="market">📊 行业大盘</button>
+    <button class="tab-btn" data-tab="rankings">🏆 榜单</button>
+    <button class="tab-btn" data-tab="shops">🏪 店铺</button>
+    <button class="tab-btn" data-tab="fav">❤ 收藏</button>
+    <button class="tab-btn" data-tab="calc">🧮 定价</button>
+  </nav>
+
+  <!-- 商品库（可搜索真实商品） -->
+  <section class="panel" id="panel-library">
+    <h2>商品库 <small>真实采集数据 · 支持简繁 / 大小写互通搜索</small></h2>
+    <div class="lib-bar">
+      <input id="libSearch" type="search" placeholder="🔍 搜商品名 / 店铺 / 品牌 / 品类，如「保温杯」「厨房收纳」「收纳盒」" autocomplete="off">
+      <button id="libBtn" class="btn">搜索</button>
+      <button id="libExport" class="btn btn-ghost" title="导出当前筛选结果为 CSV">⬇ 导出CSV</button>
+      <span class="hint" id="libHint"></span>
+    </div>
+    <div class="lib-filters">
+      <label>品类<select id="libCat"><option value="">全部</option></select></label>
+      <label>地区<select id="libLoc"><option value="">全部</option></select></label>
+      <label>排序<select id="libSort">
+        <option value="sold">总销量最高</option>
+        <option value="month" selected>月销量最高</option>
+        <option value="week">周销量最高</option>
+        <option value="sold30">近30天销量</option>
+        <option value="price_asc">价格 低→高</option>
+        <option value="price_desc">价格 高→低</option>
+        <option value="rating">评分最高</option>
+        <option value="reviews">评价最多</option>
+        <option value="liked">点赞最多</option>
+        <option value="new">最新上架</option>
+      </select></label>
+      <label>价格带<select id="libPrice">
+        <option value="">不限</option>
+        <option value="0-100">0–100</option>
+        <option value="100-300">100–300</option>
+        <option value="300-500">300–500</option>
+        <option value="500-1000">500–1000</option>
+        <option value="1000-999999">1000+</option>
+      </select></label>
+      <label>最少销量<input id="libMinSold" type="number" min="0" step="100" placeholder="0" class="lib-num"></label>
+      <label>最少月销<input id="libMinMonth" type="number" min="0" step="50" placeholder="0" class="lib-num"></label>
+      <label>最低评分<input id="libMinRating" type="number" min="0" max="5" step="0.1" placeholder="0" class="lib-num"></label>
+    </div>
+    <div class="lib-count" id="libCount"></div>
+    <div class="lib-bulk" id="libBulk">
+      <label class="bulk-sel"><input type="checkbox" id="libSelectAll"> 全选本页</label>
+      <button id="libDelSel" class="btn btn-danger">🗑 删除选中</button>
+      <button id="libExportClean" class="btn btn-ghost">⬇ 导出商品(JSON)</button>
+      <button id="ghTokenBtn" class="btn btn-ghost">⚙ GitHub Token</button>
+    </div>
+    <div class="modal hidden" id="ghTokenPanel">
+      <div class="modal-box">
+        <button class="modal-close" id="ghTokenClose" title="关闭">×</button>
+        <h3>GitHub Token 设置</h3>
+        <p class="gh-token-tip"><b>为什么需要填 Token：</b>「删除选中」会直接把商品从 GitHub 源 <code>catalog.json</code> 永久移除，并写入 <code>deleted.json</code>。扩展安装在跨境卫士，无法打开本网站，因此<strong>不能帮网站写 GitHub</strong>，必须在本站填写 Token。</p>
+        <p class="gh-token-tip">请填入具备 <b>Contents: Read and write</b> 权限的 PAT（与录制器扩展里填的是同一个）。Token 仅存于本浏览器 localStorage。</p>
+        <label class="gh-token-label">Token
+          <input id="ghTokenInput" type="password" placeholder="github_pat_..." autocomplete="off" spellcheck="false">
+        </label>
+        <div class="gh-token-actions">
+          <button id="ghTokenSave" class="btn btn-primary">保存</button>
+          <button id="ghTokenClose2" class="btn btn-ghost">关闭</button>
+        </div>
+        <div id="ghTokenMsg" class="gh-token-msg"></div>
+        <hr style="border:0;border-top:1px solid #eee;margin:16px 0;">
+        <h4>删除记录管理</h4>
+        <p class="gh-token-tip">如果你发现商品突然全部消失，可能是本地/历史删除记录过多。点击下面按钮可<strong>在本浏览器内</strong>清空本地删除集合与删除时间戳，让被本地过滤的商品重新显示。</p>
+        <div class="gh-token-actions">
+          <button id="ghClearDel" class="btn btn-ghost" style="color:#c0392b;">清空本地删除记录</button>
+        </div>
+        <hr style="border:0;border-top:1px solid #eee;margin:16px 0;">
+        <h4>数据恢复（危险）</h4>
+        <p class="gh-token-tip">当前 GitHub 源只剩 <strong>6 件</strong>商品，是因为扩展的 today-only 过滤把历史商品从 catalog 中删除了。点下面按钮可从 2026-09-02 07:06 的历史版本恢复 <strong>335 件</strong>商品，并清空 <code>deleted.json</code> 删除记录。</p>
+        <div class="gh-token-actions">
+          <button id="ghRestoreCatalog" class="btn btn-ghost" style="color:#c0392b;">恢复 335 件商品</button>
+        </div>
+        <p class="gh-token-tip" style="font-size:11px;color:#888;">警告：此操作会覆盖 GitHub 上的 <code>catalog.json</code> 与 <code>deleted.json</code>，且不可撤销。请确认你真的想恢复全部商品。</p>
+      </div>
+    </div>
+    <div class="lib-grid" id="libGrid"></div>
+    <div class="lib-pager" id="libPager"></div>
+  </section>
+
+  <section class="panel hidden" id="panel-blue">
+    <h2>蓝海关键词榜 <small>供需比：需求高 / 竞争低，越靠前越值得切入</small></h2>
+    <div class="table-scroll">
+      <table class="grid" id="tblBlue">
+        <thead><tr>
+          <th data-k="rank" class="sortable">#</th>
+          <th data-k="keyword" class="sortable">关键词</th>
+          <th data-k="items" class="sortable num">商品数</th>
+          <th data-k="avg_sold" class="sortable num">均销量</th>
+          <th data-k="avg_price" class="sortable num">均价</th>
+          <th data-k="avg_rating" class="sortable num">均评分</th>
+          <th data-k="blue_ocean" class="sortable num">蓝海指数</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel hidden" id="panel-hot">
+    <h2>热销商品 TOP</h2>
+    <div class="table-scroll">
+      <table class="grid" id="tblHot">
+        <thead><tr>
+          <th data-k="rank" class="sortable">#</th>
+          <th data-k="name" class="sortable">商品</th>
+          <th data-k="keyword" class="sortable">关键词</th>
+          <th data-k="price" class="sortable num">价格</th>
+          <th data-k="historical_sold" class="sortable num">总销量</th>
+          <th data-k="weekly_sold" class="sortable num">周销量</th>
+          <th data-k="monthly_sold" class="sortable num">月销量</th>
+          <th data-k="liked_count" class="sortable num">点赞</th>
+          <th data-k="rating_star" class="sortable num">评分</th>
+          <th data-k="shop_location" class="sortable">产地</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="tip">💡 点击任意商品行，查看「总销量 / 周销量 / 月销量 + 各 SKU 售价」详情</div>
+    </div>
+  </section>
+
+  <section class="panel hidden" id="panel-soaring">
+    <h2>飙升商品 TOP <small>较前一日销量增量（需连续运行多日）</small></h2>
+    <div class="table-scroll">
+      <table class="grid" id="tblSoar">
+        <thead><tr>
+          <th data-k="rank" class="sortable">#</th>
+          <th data-k="name" class="sortable">商品</th>
+          <th data-k="price" class="sortable num">价格</th>
+          <th data-k="historical_sold" class="sortable num">总销量</th>
+          <th data-k="weekly_sold" class="sortable num">周销量</th>
+          <th data-k="monthly_sold" class="sortable num">月销量</th>
+          <th data-k="sold_delta" class="sortable num">增量</th>
+          <th data-k="keyword" class="sortable">关键词</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel hidden" id="panel-band">
+    <h2>价格带分析 <small>各价格区间平均销量</small></h2>
+    <div id="bandChart" class="chart"></div>
+    <div class="table-scroll">
+      <table class="grid" id="tblBand">
+        <thead><tr>
+          <th>价格带</th><th class="num">商品数</th><th class="num">平均销量</th><th class="num">平均价</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel hidden" id="panel-cat">
+    <h2>类目销量分布</h2>
+    <div id="catChart" class="chart"></div>
+    <div class="table-scroll">
+      <table class="grid" id="tblCat">
+        <thead><tr>
+          <th>类目</th><th class="num">商品数</th><th class="num">总销量</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel hidden" id="panel-lookup">
+    <h2>查商品 <small>粘贴虾皮台湾商品链接或输入「店铺ID 商品ID」，直接抓真实数据</small></h2>
+    <div class="lookup-box">
+      <input id="lookupInput" type="text" placeholder="例如：https://shopee.tw/商品名-i.123456789.987654321  或  123456789 987654321" autocomplete="off">
+      <button id="lookupBtn" class="btn">查询</button>
+    </div>
+    <div class="hint" id="lookupHint"></div>
+    <div id="lookupResult"></div>
+  </section>
+
+  <!-- 行业大盘（对标知虾「行业大盘 / 潜力品类」） -->
+  <section class="panel hidden" id="panel-market">
+    <h2>行业大盘 <small>各品类商品规模、价格、销量、竞争度与蓝海指数（数据来自已采集的真实商品）</small></h2>
+    <div class="mkt-cards" id="mktCards"></div>
+    <div class="tip">💡 <b>蓝海指数</b>=需求(均销量)高、竞争(商品数)低、质量(均评分)好 → 分数越高越「蓝」，越值得切入。</div>
+  </section>
+
+  <!-- 榜单（对标知虾「产品分析」多榜单） -->
+  <section class="panel hidden" id="panel-rankings">
+    <div class="seg" id="rankSeg">
+      <button class="seg-btn active" data-kind="hot">🔥 热销榜</button>
+      <button class="seg-btn" data-kind="popular">❤ 高人气榜</button>
+      <button class="seg-btn" data-kind="rating">⭐ 高评分榜</button>
+      <button class="seg-btn" data-kind="new">🆕 新品榜</button>
+    </div>
+    <div class="table-scroll">
+      <table class="grid" id="tblRank">
+        <thead><tr>
+          <th class="rk">#</th>
+          <th>商品</th>
+          <th class="num">价格</th>
+          <th class="num" id="rankMetricHdr">销量</th>
+          <th>店铺</th>
+          <th>品类</th>
+          <th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 店铺分析（对标知虾「店铺分析」） -->
+  <section class="panel hidden" id="panel-shops">
+    <h2>店铺分析 <small>按当月销量排行 · 点击店铺查看全部在录商品</small></h2>
+    <div class="lib-filters">
+      <label>排序<select id="shopSort">
+        <option value="month">月销量最高</option>
+        <option value="sold">总销量最高</option>
+        <option value="count">商品数最多</option>
+        <option value="rating">评分最高</option>
+      </select></label>
+      <span class="hint" id="shopHint"></span>
+    </div>
+    <div class="table-scroll">
+      <table class="grid" id="tblShop">
+        <thead><tr>
+          <th class="rk">#</th>
+          <th>店铺</th>
+          <th class="num">月销量</th>
+          <th class="num">热品数</th>
+          <th class="num">均价</th>
+          <th class="num">趋势</th>
+          <th>主卖品类</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 我的收藏（轻量监控） -->
+  <section class="panel hidden" id="panel-fav">
+    <h2>我的收藏 <small>把心仪商品加入收藏，跨刷新保留（本地存储），作为简易监控清单</small></h2>
+    <div class="lib-grid" id="favGrid"></div>
+    <div class="tip" id="favEmpty">还没有收藏。在「商品库」任意商品卡片点 ❤ 即可加入。</div>
+  </section>
+
+  <!-- 定价计算器（对标知虾「定价计算器」） -->
+  <section class="panel hidden" id="panel-calc">
+    <h2>定价计算器 <small>输入成本与运费，反推建议售价与利润（虾皮台湾佣金率可调）</small></h2>
+    <div class="calc-wrap">
+      <div class="calc-form">
+        <label>商品成本 (NT$)<input id="cCost" type="number" value="80" min="0"></label>
+        <label>重量 (kg)<input id="cWeight" type="number" value="0.5" min="0" step="0.1"></label>
+        <label>跨境物流 (NT$/kg)<input id="cShipKg" type="number" value="120" min="0"></label>
+        <label>打包/杂费 (NT$)<input id="cPack" type="number" value="10" min="0"></label>
+        <label>平台佣金率 (%)<input id="cRate" type="number" value="2" min="0" step="0.1"></label>
+        <label>目标利润率 (%)<input id="cMargin" type="number" value="30" min="0" step="1"></label>
+        <label>其他费率 (%)<input id="cOther" type="number" value="3" min="0" step="0.1"></label>
+      </div>
+      <div class="calc-out" id="calcOut"></div>
+    </div>
+    <div class="tip">📌 公式：售价 = (成本+物流+打包) ÷ (1 − 佣金率 − 其他费率 − 目标利润率)。利润 = 售价 − 成本 − 物流 − 打包 − 各项费率抽成。</div>
+  </section>
+
+  <footer class="foot">由 WorkBuddy 虾皮台湾选品工具生成 · 数据仅供参考，请以平台实际为准</footer>
+</main>
+
+<!-- 单品详情弹窗 -->
+<div id="modal" class="modal hidden">
+  <div class="modal-box">
+    <button class="modal-close" id="modalClose">✕</button>
+    <div id="modalBody" class="modal-body">加载中…</div>
+  </div>
+</div>
+
+<script src="app.js?v=20260909c"></script>
+</body>
+</html>
