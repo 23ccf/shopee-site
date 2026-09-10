@@ -277,6 +277,14 @@
     var wSum = w.sold + w.grow + w.rep + w.price + w.comp;
     if (wSum <= 0) { w = { sold: 35, grow: 25, rep: 20, price: 10, comp: 10 }; wSum = 100; }
 
+    // rating / reviews 从未被采集 → 口碑分恒为 0，20% 的权重等于白给，
+    // 你拖动「口碑权重」滑块会完全看不到变化。检测到时把这部分权重并入销量，
+    // 并在统计条上写明，不假装算过了。
+    state.noRepData = !state.items.some(function (it) {
+      return (Number(it.rating) || 0) > 0 || (Number(it.reviews) || 0) > 0;
+    });
+    if (state.noRepData && w.rep > 0) { w.sold += w.rep; w.rep = 0; }
+
     var sweet = Number($("sweetPrice").value) || 399;
 
     var maxMonth = 1, maxRev = 1, maxSold = 1;
@@ -365,6 +373,7 @@
         (c.S + c.A) + '</div><div class="sub">S ' + c.S + ' / A ' + c.A + '</div></div>' +
       '<div class="stat"><div class="k">B / C 档</div><div class="v flat">' +
         (c.B + c.C) + '</div><div class="sub">B ' + c.B + ' / C ' + c.C + '</div></div>' +
+      (state.noRepData ? '<div class="stat"><div class="k">口碑权重</div><div class="v flat">已并入销量</div><div class="sub">未采集评分数据</div></div>' : '') +
       '<div class="stat"><div class="k">最高分商品</div>' +
         '<div class="v up" style="font-size:15px;line-height:1.4">' +
         esc(String(top ? top.name : "—").slice(0, 16)) + '</div>' +

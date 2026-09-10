@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260910f"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260910g"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -146,17 +146,17 @@
     // 首页直奔商品库：先加载 catalog，再展示
     wireTabs();
     wireProductModal();
+    wireLookup();
     state.fav = loadFav();
     state.favGroups = loadFavGroups();
     state.kws = loadKws();
     loadCatalogAll().then(() => {
       wireLibrary();
       wireToday();
-      wireMarket();
-      wireRankings();
       wireShops();
       wireFav();
       wireGate();
+      refreshAnalysisViews();
     });
     wireCalc();
     wireSync();
@@ -192,7 +192,192 @@
     }
   }
 
+  // ---------- 简繁归一化（2026-09-10）----------
+  // 台湾虾皮的商品名全是繁体，而你是大陆打字节奏。搜简体「运动鞋」匹配不到繁体「運動鞋」，
+  // 会直接搜出 0 条、误以为没货 —— 这是台湾市场选品的刚需。
+  // 这里不做完整繁简转换（那要几万字表、体积太大），只覆盖电商品类高频字，
+  // 两侧都归一到简体再比对，因此「繁体查简体」「简体查繁体」双向都通。
+  const T2S_PAIRS = ("萬万 與与 從从 這这 還还 為为 將将 對对 應应 開开 關关 間间 時时 "
+    + "樣样 種种 隻只 裡里 點点 壓压 縮缩 輕轻 鬆松 軟软 層层 數数 幾几 實实 際际 標标 "
+    + "準准 話话 語语 說说 謝谢 讓让 給给 總总 計计 據据 顯显 號号 經经 過过 邊边 麼么 個个 "
+    + "們们 來来 後后 並并 體体 國国 學学 會会 員员 產产 業业 專专 廠厂 內内 運运 動动 "
+    + "電电 機机 褲裤 襪袜 飾饰 網网 涼凉 碼码 顏颜 紅红 綠绿 藍蓝 黃黄 長长 寬宽 舊旧 "
+    + "熱热 賣卖 優优 質质 組组 雙双 條条 張张 臺台 灣湾 進进 貨货 費费 銷销 現现 價价 "
+    + "錢钱 幣币 選选 購购 買买 訂订 單单 發发 廚厨 衛卫 燈灯 傘伞 襯衬 絨绒 裝装 納纳 "
+    + "環环 膠胶 鋼钢 鐵铁 鋁铝 鏡镜 錶表 鐘钟 線线 纜缆 頭头 鍵键 盤盘 螢荧 櫃柜 盤盘 "
+    + "鍋锅 爐炉 紙纸 濕湿 潔洁 劑剂 髮发 嬰婴 車车 輪轮 載载 轉转 啞哑 鈴铃 繩绳 舉举 "
+    + "護护 殼壳 貼贴 塵尘 傢家 俱具 寢寝 飾饰 擺摆 掛挂 收收 納纳 整整 理理 儲储 藏藏 "
+    + "夾夹 扣扣 黏粘 膠胶 綁绑 帶带 包包 裝装 護护 膚肤 化化 妝妆 保保 養养 氣气 涼凉 減减 溫温 濕湿 乾干 淨净 緊紧 厚厚 薄薄 軟软 硬硬 濃浓 淡淡 純纯");
+  const T2S_MAP = (function () {
+    const m = Object.create(null);
+    T2S_PAIRS.split(/\s+/).forEach(function (p) {
+      if (p && p.length >= 2) m[p.charAt(0)] = p.charAt(1);
+    });
+    return m;
+  })();
+  function normSearch(s) {
+    let out = "";
+    const str = String(s == null ? "" : s);
+    for (let i = 0; i < str.length; i++) {
+      const c = str.charAt(i);
+      out += (T2S_MAP[c] || c);
+    }
+    return out.toLowerCase();
+  }
+
+  // ---------- 客户端重算分析数据（2026-09-10）----------
+  // data/analysis.json 停留在 2026-08-08 的空骨架（total_items=0，hot/soaring/bands/
+  // categories/keywords/blue_ocean 全是空数组），而且没有任何程序会去生成它。
+  // 与其让 5 个板块永远空着，不如直接用已采集的真实商品现算。
+  // 铁律：只依赖真实采集到的字段（price / month_sold / sold_total / name / shop / last_seen）。
+  // rating / cats / loc / reviews / liked 从未采集 —— 用它们算出来的东西是假的，一律不算。
+  const BAND_DEFS = [
+    { label: "NT$0–100", min: 0, max: 100 },
+    { label: "NT$100–300", min: 100, max: 300 },
+    { label: "NT$300–500", min: 300, max: 500 },
+    { label: "NT$500–1000", min: 500, max: 1000 },
+    { label: "NT$1000+", min: 1000, max: Infinity },
+  ];
+  function hasPrice(it) { return Number(it && it.price) > 0; }
+
+  function readTrack() {
+    try { return JSON.parse(localStorage.getItem("shopee_track_v1") || "null"); } catch (e) { return null; }
+  }
+  function avgNum(arr) {
+    if (!arr.length) return 0;
+    return arr.reduce(function (a, b) { return a + b; }, 0) / arr.length;
+  }
+
+  function computeBands(items) {
+    return BAND_DEFS.map(function (d) {
+      const its = items.filter(function (it) {
+        return hasPrice(it) && it.price >= d.min && it.price < d.max;
+      });
+      return {
+        label: d.label,
+        count: its.length,
+        avg_sold: Math.round(avgNum(its.map(function (i) { return Number(i.month_sold) || 0; })) * 10) / 10,
+        avg_price: Math.round(avgNum(its.filter(hasPrice).map(function (i) { return Number(i.price); }))),
+      };
+    }).filter(function (b) { return b.count > 0; });
+  }
+
+  function computeHot(items) {
+    return items.slice().sort(function (a, b) {
+      return (Number(b.sold_total) || 0) - (Number(a.sold_total) || 0);
+    }).slice(0, 50).map(function (it) {
+      return {
+        name: it.name || "（未采集到名称）",
+        shop: it.shop || "—",
+        price: Number(it.price) || 0,
+        historical_sold: Number(it.sold_total) || 0,
+        weekly_sold: Number(it.week_sold) || 0,
+        monthly_sold: Number(it.month_sold) || 0,
+        last_seen: it.last_seen || it.first_seen || 0,
+        _raw: it,
+      };
+    });
+  }
+
+  // 飙升 = 本地每日快照里「最近两次记录的销量差」。快照存在浏览器本机
+  // （sales.html 的自动记录会写），换电脑/清缓存就没有 —— 所以没有快照时必须说清楚，
+  // 不能伪造一个增量出来。
+  function computeSoaring(items) {
+    const t = readTrack();
+    if (!t || !t.items) return [];
+    const out = [];
+    items.forEach(function (it) {
+      const rec = t.items[libItemId(it)];
+      if (!rec || !rec.sold) return;
+      const arr = rec.sold;
+      const n = arr.length;
+      if (n < 2) return;
+      const last = arr[n - 1], prev = arr[n - 2];
+      if (last == null || prev == null) return;
+      const delta = Number(last) - Number(prev);
+      if (!(delta > 0)) return;
+      out.push({
+        name: it.name || "（未采集到名称）",
+        shop: it.shop || "—",
+        price: Number(it.price) || 0,
+        historical_sold: Number(it.sold_total) || 0,
+        weekly_sold: Number(it.week_sold) || 0,
+        monthly_sold: Number(it.month_sold) || 0,
+        sold_delta: delta,
+        _raw: it,
+      });
+    });
+    out.sort(function (a, b) { return b.sold_delta - a.sold_delta; });
+    return out.slice(0, 50);
+  }
+
+  // 蓝海词 = 你关注的每个词，算「需求 ÷ 供给」：
+  //   需求 = 该词命中商品的平均月销（用 log 压缩，避免单个爆款把指数拉爆）
+  //   供给 = 该词命中的商品条数（在售竞品多不多）
+  // 需求高、竞品少 → 指数高，值得切入。数据来自真实在录商品 + 你自己的关注词。
+  function computeBlueOcean(items) {
+    const kws = state.kws || [];
+    const rows = [];
+    kws.forEach(function (k) {
+      const w = String((k && k.w) || "").trim();
+      if (!w) return;
+      const its = items.filter(function (it) { return libMatch(it, w); });
+      if (!its.length) return;
+      const avg_sold = avgNum(its.map(function (i) { return Number(i.month_sold) || 0; }));
+      const avg_price = avgNum(its.filter(hasPrice).map(function (i) { return Number(i.price); }));
+      const demand = Math.log(1 + avg_sold);
+      const supply = Math.log(1 + its.length);
+      const blue = Math.round((demand / (demand + supply)) * 1000) / 10;
+      rows.push({
+        keyword: w,
+        items: its.length,
+        avg_sold: Math.round(avg_sold),
+        avg_price: Math.round(avg_price),
+        blue_ocean: blue,
+      });
+    });
+    rows.sort(function (a, b) { return b.blue_ocean - a.blue_ocean; });
+    return rows;
+  }
+
+  function rebuildAnalysis(items) {
+    if (!state.data) return;
+    // analysis.json 加载失败 / 结构不全时补一个空壳，不能让整页崩掉
+    if (!state.data.analysis) state.data.analysis = {
+      total_items: 0, hot: [], soaring: [], bands: [], categories: [],
+      keywords: [], blue_ocean: [], best_band: null, best_category: null,
+    };
+    const pool = items || [];
+    const a = state.data.analysis;
+    a.total_items = pool.length;
+    a.bands = computeBands(pool);
+    a.hot = computeHot(pool);
+    a.soaring = computeSoaring(pool);
+    a.blue_ocean = computeBlueOcean(pool);
+    // 类目（cats）从未被采集 → 不做任何「类目榜」，留空由页面显式说明
+    a.categories = [];
+    a.best_category = null;
+    // 最佳价格带：在样本量够（≥3 件）的档位里挑平均月销最高的
+    const cands = a.bands.filter(function (b) { return b.count >= 3; });
+    const pick = cands.length ? cands : a.bands;
+    a.best_band = pick.length
+      ? pick.slice().sort(function (x, y) { return y.avg_sold - x.avg_sold; })[0]
+      : null;
+  }
+
   // ---------- 概览卡片 ----------
+  // 分析类板块统一刷新：数据一变（首次加载 / 月销门槛调整）就必须重算，
+  // 否则「价格带」还停在上一次门槛下的结果，和商品库对不上。
+  function refreshAnalysisViews() {
+    if (!state.catalogAll || !state.catalogAll.items) return;
+    rebuildAnalysis(state.catalogAll.items);
+    renderCards();
+    renderBlue();
+    renderBand();
+    renderHot();
+    renderSoar();
+  }
+
   function renderCards() {
     const a = state.data.analysis;
     const cards = [
@@ -200,7 +385,7 @@
       { n: a.blue_ocean.length, l: "蓝海关键词" },
       { n: a.soaring.length, l: "飙升商品(较前日)" },
       { n: a.best_band ? a.best_band.label : "-", l: "最佳价格带" },
-      { n: a.best_category ? a.best_category.category : "-", l: "最热类目" },
+      { n: a.best_band ? fmt(a.best_band.avg_sold) : "-", l: "该带均月销" },
     ];
     $("#cards").innerHTML = cards
       .map((c) => `<div class="card"><div class="n">${c.n}</div><div class="l">${c.l}</div></div>`)
@@ -216,13 +401,17 @@
         rank: i + 1,
         关键词: esc(k.keyword),
         商品数: fmt(k.items),
-        均销量: fmt(k.avg_sold),
+        均月销: fmt(k.avg_sold),
         均价: money(k.avg_price),
-        均评分: k.avg_rating,
         蓝海指数: "<b>" + k.blue_ocean + "</b>",
       })),
-      ["rank", "关键词", "商品数", "均销量", "均价", "均评分", "蓝海指数"]
+      ["rank", "关键词", "商品数", "均月销", "均价", "蓝海指数"]
     );
+    if (!rows.length) {
+      $("#tblBlue tbody").innerHTML =
+        '<tr><td colspan="6" style="color:#999">还没有蓝海词。到「全部商品」搜一个词（比如 洞洞鞋），'
+        + '点搜索框右侧的「+ 关注」，这里就会算出它的供需比。</td></tr>';
+    }
   }
 
   // ---------- 热销 ----------
@@ -230,22 +419,22 @@
     const rows = filterSort(state.data.analysis.hot, (it) => ({
       rank: 0,
       商品: `<span class="name" title="${esc(it.name)}">${esc(it.name)}</span>`,
-      关键词: `<span class="pill">${esc(it.keyword)}</span>`,
-      价格: money(it.price),
+      价格: hasPrice(it) ? money(it.price) : '<span class="muted">未采集</span>',
       总销量: fmt(it.historical_sold),
-      周销量: fmt(it.weekly_sold),
       月销量: fmt(it.monthly_sold),
-      点赞: fmt(it.liked_count),
-      评分: it.rating_star,
-      产地: esc(it.shop_location || "-"),
-      _raw: it,
+      店铺: esc(it.shop || "—"),
+      _raw: it._raw || it,
     }));
     fillTable(
       "#tblHot",
       rows.map((r, i) => Object.assign({ rank: i + 1 }, r)),
-      ["rank", "商品", "关键词", "价格", "总销量", "周销量", "月销量", "点赞", "评分", "产地"],
+      ["rank", "商品", "价格", "总销量", "月销量", "店铺"],
       rows
     );
+    if (!state.data.analysis.hot.length) {
+      $("#tblHot tbody").innerHTML =
+        '<tr><td colspan="6" style="color:#999">暂无商品数据。</td></tr>';
+    }
   }
 
   // ---------- 飙升 ----------
@@ -253,23 +442,24 @@
     const rows = filterSort(state.data.analysis.soaring, (it) => ({
       rank: 0,
       商品: `<span class="name" title="${esc(it.name)}">${esc(it.name)}</span>`,
-      价格: money(it.price),
+      价格: hasPrice(it) ? money(it.price) : '<span class="muted">未采集</span>',
       总销量: fmt(it.historical_sold),
-      周销量: fmt(it.weekly_sold),
       月销量: fmt(it.monthly_sold),
       增量: `<span class="up">+${fmt(it.sold_delta)}</span>`,
-      关键词: `<span class="pill">${esc(it.keyword)}</span>`,
-      _raw: it,
+      店铺: esc(it.shop || "—"),
+      _raw: it._raw || it,
     }));
     fillTable(
       "#tblSoar",
       rows.map((r, i) => Object.assign({ rank: i + 1 }, r)),
-      ["rank", "商品", "价格", "总销量", "周销量", "月销量", "增量", "关键词"],
+      ["rank", "商品", "价格", "总销量", "月销量", "增量", "店铺"],
       rows
     );
     if (!state.data.analysis.soaring.length) {
       $("#tblSoar tbody").innerHTML =
-        '<tr><td colspan="8" style="color:#999">暂无前一日数据可对比（连续运行多日后出现）</td></tr>';
+        '<tr><td colspan="7" style="color:#999">还没有可比对的快照。'
+        + '打开「销售追踪」页并开启自动记录，连续记录 2 天以上，这里就会出现销量在涨的商品'
+        + '（快照只存在本机浏览器，换电脑或清缓存会丢失）。</td></tr>';
     }
   }
 
@@ -301,6 +491,7 @@
       .join("");
   }
   function renderCat() {
+    if (!$("#catChart")) return;   // 类目分布面板已移除（cats 从未采集）
     const c = state.data.analysis.categories;
     barChart("#catChart", c, "total_sold", "category", " 件", "cat");
     $("#tblCat tbody").innerHTML = c
@@ -402,9 +593,11 @@
         tab.classList.add("on");
         const map = {
           library: "panel-library",
-          today: "panel-today",
-          market: "panel-market",
-          rankings: "panel-rankings",
+          lookup: "panel-lookup",
+          hot: "panel-hot",
+          soaring: "panel-soaring",
+          band: "panel-band",
+          blue: "panel-blue",
           shops: "panel-shops",
           fav: "panel-fav",
           calc: "panel-calc",
@@ -1005,6 +1198,7 @@
         els.loc.innerHTML =
           '<option value="">全部</option>' +
           L.locs.map((l) => `<option value="${l.name}">${esc(l.name)} (${l.count})</option>`).join("");
+        syncFilterOptions(els.cat); syncFilterOptions(els.loc);
       } else {
         loadCatalogFallback(els);
       }
@@ -1299,16 +1493,26 @@
           Object.keys(cats).map((c) => `<option value="${esc(c)}">${esc(c)} (${cats[c]})</option>`).join("");
         els.loc.innerHTML = '<option value="">全部</option>' +
           Object.keys(locs).map((l) => `<option value="${esc(l)}">${esc(l)} (${locs[l]})</option>`).join("");
+        syncFilterOptions(els.cat); syncFilterOptions(els.loc);
       })
       .catch(() => {});
   }
 
+  // cats / loc 从未被采集 → 下拉永远只有「全部」。与其摆一个点了没反应的控件，
+  // 不如隐藏；将来录制器真采到类目了会自动出现。
+  function syncFilterOptions(sel) {
+    if (!sel) return;
+    const lb = sel.closest("label");
+    if (!lb) return;
+    lb.style.display = sel.options.length > 1 ? "" : "none";
+  }
+
   function applyLibFilters(items, L) {
     let its = items.slice();
-    const q = (L.q || "").trim().toLowerCase();
-    if (q) its = its.filter((it) =>
-      ((it.name || "") + " " + (it.shop || "") + " " + (it.brand || "") + " " + (it.cats || []).join(" "))
-        .toLowerCase().includes(q));
+    // ★ 命中口径必须只有一处：统一走 libMatch（含简繁归一）。
+    //   这里原先内联了一份不带简繁转换的匹配，导致「看板支持简繁、商品库不支持」的割裂。
+    const q = (L.q || "").trim();
+    if (q) its = its.filter((it) => libMatch(it, q));
     if (L.cat) its = its.filter((it) => (it.cats || []).includes(L.cat));
     if (L.loc) its = its.filter((it) => (it.loc || "").startsWith(L.loc));
     if (L.min_price != null) its = its.filter((it) => it.price >= L.min_price);
@@ -1319,9 +1523,10 @@
     const map = {
       sold: (x) => -x.sold_total, sold30: (x) => -x.sold, total_sold: (x) => -x.sold_total,
       month: (x) => -(x.month_sold || 0), week: (x) => -(x.week_sold || 0),
-      price_asc: (x) => x.price,
-      price_desc: (x) => -x.price, rating: (x) => -(x.rating || 0),
-      reviews: (x) => -x.reviews, liked: (x) => -x.liked, new: (x) => -(x.listed_at || 0),
+      // rating / reviews / liked / listed_at 从未采集，对应的排序项是死控件，已移除。
+      // 价格缺失（=0）一律排最后，不能让它霸占「价格低→高」的前几十名。
+      price_asc: (x) => (Number(x.price) > 0 ? x.price : Infinity),
+      price_desc: (x) => (Number(x.price) > 0 ? -x.price : -Infinity),
     };
     const keyFn = map[L.sort] || map.sold;
     its.sort((a, b) => keyFn(a) - keyFn(b));
@@ -1941,6 +2146,7 @@
   }
   function wireMarket() {
     const el = $("#mktCards");
+    if (!el) return;
     if (!state.catalogAll) { el.innerHTML = '<div class="empty">暂无可聚合的商品库数据（请先运行采集或刷新页面）。</div>'; return; }
     const rows = computeMarket(state.catalogAll.items || []);
     if (!rows.length) { el.innerHTML = '<div class="empty">暂无品类数据。</div>'; return; }
@@ -1980,6 +2186,7 @@
   const RANK_METRIC = { hot: "销量", popular: "人气", rating: "评分", new: "上架" };
   function wireRankings() {
     const seg = $("#rankSeg");
+    if (!seg) return;
     const hdr = $("#rankMetricHdr");
     const render = (kind) => {
       hdr.textContent = RANK_METRIC[kind];
@@ -2138,7 +2345,7 @@
       .map((it) => `<div class="pcard" data-id="${esc(it.id)}">
         ${it.img ? `<img class="pcard-img" src="${esc(thumbUrl(proxyImg(it.img)))}" referrerpolicy="no-referrer" loading="lazy" decoding="async" alt="" onerror="__imgFallback(this)">` : `<div class="pcard-img pcard-img-empty">📦</div>`}
         <div class="pcard-body">
-          <div class="pcard-name" title="${esc(it.name)}">${esc(it.name)}</div>
+          <div class="pcard-name" title="${esc(it.name)}">${esc(it.name || "（未采集到名称）")}</div>
           <div class="pcard-price">${priceHtml(it)}</div>
           <div class="pcard-meta"><span class="stars">${starStr(it.rating)}</span><span class="muted">月${fmtMonth(it.month_sold)} · 总${fmt(it.sold_total)}</span></div>
         </div></div>`).join("");
@@ -2161,10 +2368,11 @@
   const KW_MAX = 20;
   // 关键词命中的口径必须与商品库搜索完全一致，否则「看板数字」和「点进去看到的件数」会对不上
   function libMatch(it, q) {
-    const s = String(q == null ? "" : q).trim().toLowerCase();
+    const s = normSearch(String(q == null ? "" : q).trim());
     if (!s) return true;
-    return ((it.name || "") + " " + (it.shop || "") + " " + (it.brand || "") + " " + (it.cats || []).join(" "))
-      .toLowerCase().includes(s);
+    return normSearch(
+      (it.name || "") + " " + (it.shop || "") + " " + (it.brand || "") + " " + (it.cats || []).join(" ")
+    ).includes(s);
   }
   function kwDayList(n) {
     const out = [];
@@ -2628,6 +2836,9 @@
     const cur = state.data ? state.data.currency : "NT$";
     const lo = Math.round(Number(it.price) || 0);
     const hi = Math.round(Number(it.price_max) || 0);
+    // 74/491 件商品没采到价格，被归一化成了 0。显示成 NT$0 是错的（会被当成真售价，
+    // 还会把「价格低→高」排序的前几十名全占掉），这里显式说明。
+    if (!(lo > 0)) return '<span class="muted">价格未采集</span>';
     const warn = priceSanity(it.price) ? FLAG_PRICE_WARN : (it.price_repaired ? FLAG_PRICE_FIXED : "");
     if (hi > lo && lo > 0) return `${cur}${fmt(lo)}<span class="pr-sep">–</span>${fmt(hi)}${warn}`;
     return `${cur}${fmt(lo)}${warn}`;
@@ -2642,7 +2853,8 @@
       ? `<img class="pcard-img" src="${esc(thumbUrl(proxyImg(it.img)))}" referrerpolicy="no-referrer" loading="lazy" decoding="async" alt="" onerror="__imgFallback(this)">`
       : `<div class="pcard-img pcard-img-empty">📦</div>`;
     const meta = [];
-    if (cfg.rating) meta.push(`<span class="stars" title="评分 ${it.rating}">${starStr(it.rating)} <b>${it.rating}</b></span>`);
+    // rating 从未被采集 → 恒为 0。摆一排「★ 0」是纯噪音，有真实评分才显示。
+    if (cfg.rating && Number(it.rating) > 0) meta.push(`<span class="stars" title="评分 ${it.rating}">${starStr(it.rating)} <b>${it.rating}</b></span>`);
     if (cfg.sales) meta.push(`<span class="muted" title="周/月/总销量">周${fmt(it.week_sold)} · 月${fmtMonth(it.month_sold)} · 总${fmt(it.sold_total)}</span>`);
     if (cfg.official && it.official) meta.push('<span class="badge official">官方</span>');
     const where = [cfg.shop ? esc(it.shop || "—") : "", cfg.loc ? esc((it.loc || "").slice(0, 6)) : ""].filter(Boolean).join(" · ");
@@ -2652,9 +2864,9 @@
       ${img}
       ${freshBadgeHtml(it)}
       <div class="pcard-body">
-        <div class="pcard-name" title="${esc(it.name)}">${esc(it.name)}</div>
+        <div class="pcard-name" title="${esc(it.name)}">${esc(it.name || "（未采集到名称）")}</div>
         ${cfg.price ? `<div class="pcard-price">${priceHtml(it)}</div>` : ""}
-        ${cfg.sku ? `<div class="pcard-sku">主卖SKU：${esc(it.main_sku && it.main_sku.name ? it.main_sku.name : "—")}${it.main_sku && it.main_sku.price != null ? " · " + cur + fmt(Math.round(it.main_sku.price)) : ""}</div>` : ""}
+        ${(cfg.sku && it.main_sku && it.main_sku.name) ? `<div class="pcard-sku">主卖SKU：${esc(it.main_sku.name)}${it.main_sku.price != null ? " · " + cur + fmt(Math.round(it.main_sku.price)) : ""}</div>` : ""}
         ${meta.length ? `<div class="pcard-meta">${meta.join("")}</div>` : ""}
         ${where ? `<div class="pcard-shop">${where}</div>` : ""}
         ${cfg.cats && cats ? `<div class="pcard-cats">${cats}</div>` : ""}
@@ -2753,10 +2965,8 @@
     const rawTodayN = rawAll.filter(isToday).length;
     let items = (state.lib.catalogFallback || []).filter(isToday);
     const passedTodayN = items.length;                 // 过门槛后的今日件数（搜索前）
-    const q = (T.q || "").trim().toLowerCase();
-    if (q) items = items.filter((it) =>
-      ((it.name || "") + " " + (it.shop || "") + " " + (it.brand || "") + " " + (it.cats || []).join(" "))
-        .toLowerCase().includes(q));
+    const q = (T.q || "").trim();
+    if (q) items = items.filter((it) => libMatch(it, q));
     const map = {
       month: (x) => -(x.month_sold || x.sold_total || 0),
       last: (x) => -(x.last_seen || x.first_seen || 0),
@@ -3149,6 +3359,7 @@
       _appliedSig = "";
       if (state.catalogAll && state.catalogAll._rawItems) {
         applyCatalog(state.catalogAll);
+        refreshAnalysisViews();
       }
       refreshCurrentView();
       showToast(v ? "月销门槛已改为 ≥" + v + "，低动销商品已隐藏" : "月销门槛已关闭，显示全部商品");
@@ -3260,10 +3471,14 @@
       clientLibSearch();
     } else if (tab === "today") {
       renderToday();
-    } else if (tab === "market") {
-      wireMarket();
-    } else if (tab === "rankings") {
-      wireRankings();
+    } else if (tab === "hot") {
+      renderHot();
+    } else if (tab === "soaring") {
+      renderSoar();
+    } else if (tab === "band") {
+      renderBand();
+    } else if (tab === "blue") {
+      renderBlue();
     } else if (tab === "shops") {
       wireShops();
     } else if (tab === "fav") {

@@ -40,12 +40,18 @@
   <!-- 标签页 -->
   <nav class="tabs" id="tabs">
     <button class="tab-btn on" data-tab="library">📦 全部商品</button>
-    <button class="tab-btn" data-tab="market">📊 行业大盘</button>
-    <button class="tab-btn" data-tab="rankings">🏆 榜单</button>
+    <button class="tab-btn" data-tab="lookup">🔍 查商品</button>
+    <button class="tab-btn" data-tab="hot">🔥 热销</button>
+    <button class="tab-btn" data-tab="soaring">🚀 飙升</button>
+    <button class="tab-btn" data-tab="band">💰 价格带</button>
+    <button class="tab-btn" data-tab="blue">💎 蓝海词</button>
     <button class="tab-btn" data-tab="shops">🏪 店铺</button>
     <button class="tab-btn" data-tab="fav">❤ 收藏</button>
     <button class="tab-btn" data-tab="calc">🧮 定价</button>
   </nav>
+
+  <!-- 概览 KPI：全部由当前在录商品现算，不再读那个空骨架 analysis.json -->
+  <div class="cards" id="cards"></div>
 
   <!-- 商品库（可搜索真实商品） -->
   <section class="panel" id="panel-library">
@@ -67,10 +73,6 @@
         <option value="sold30">近30天销量</option>
         <option value="price_asc">价格 低→高</option>
         <option value="price_desc">价格 高→低</option>
-        <option value="rating">评分最高</option>
-        <option value="reviews">评价最多</option>
-        <option value="liked">点赞最多</option>
-        <option value="new">最新上架</option>
       </select></label>
       <label>价格带<select id="libPrice">
         <option value="">不限</option>
@@ -145,9 +147,8 @@
           <th data-k="rank" class="sortable">#</th>
           <th data-k="keyword" class="sortable">关键词</th>
           <th data-k="items" class="sortable num">商品数</th>
-          <th data-k="avg_sold" class="sortable num">均销量</th>
+          <th data-k="avg_sold" class="sortable num">均月销</th>
           <th data-k="avg_price" class="sortable num">均价</th>
-          <th data-k="avg_rating" class="sortable num">均评分</th>
           <th data-k="blue_ocean" class="sortable num">蓝海指数</th>
         </tr></thead>
         <tbody></tbody>
@@ -156,20 +157,16 @@
   </section>
 
   <section class="panel hidden" id="panel-hot">
-    <h2>热销商品 TOP</h2>
+    <h2>热销商品 TOP <small>按累计总销量排序 · 数据来自当前在录商品</small></h2>
     <div class="table-scroll">
       <table class="grid" id="tblHot">
         <thead><tr>
           <th data-k="rank" class="sortable">#</th>
           <th data-k="name" class="sortable">商品</th>
-          <th data-k="keyword" class="sortable">关键词</th>
           <th data-k="price" class="sortable num">价格</th>
           <th data-k="historical_sold" class="sortable num">总销量</th>
-          <th data-k="weekly_sold" class="sortable num">周销量</th>
           <th data-k="monthly_sold" class="sortable num">月销量</th>
-          <th data-k="liked_count" class="sortable num">点赞</th>
-          <th data-k="rating_star" class="sortable num">评分</th>
-          <th data-k="shop_location" class="sortable">产地</th>
+          <th data-k="shop" class="sortable">店铺</th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -178,7 +175,7 @@
   </section>
 
   <section class="panel hidden" id="panel-soaring">
-    <h2>飙升商品 TOP <small>较前一日销量增量（需连续运行多日）</small></h2>
+    <h2>飙升商品 TOP <small>较上一次快照的销量增量（需在「销售追踪」页连续记录）</small></h2>
     <div class="table-scroll">
       <table class="grid" id="tblSoar">
         <thead><tr>
@@ -186,10 +183,9 @@
           <th data-k="name" class="sortable">商品</th>
           <th data-k="price" class="sortable num">价格</th>
           <th data-k="historical_sold" class="sortable num">总销量</th>
-          <th data-k="weekly_sold" class="sortable num">周销量</th>
           <th data-k="monthly_sold" class="sortable num">月销量</th>
           <th data-k="sold_delta" class="sortable num">增量</th>
-          <th data-k="keyword" class="sortable">关键词</th>
+          <th data-k="shop" class="sortable">店铺</th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -209,20 +205,7 @@
     </div>
   </section>
 
-  <section class="panel hidden" id="panel-cat">
-    <h2>类目销量分布</h2>
-    <div id="catChart" class="chart"></div>
-    <div class="table-scroll">
-      <table class="grid" id="tblCat">
-        <thead><tr>
-          <th>类目</th><th class="num">商品数</th><th class="num">总销量</th>
-        </tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </section>
-
-  <section class="panel hidden" id="panel-lookup">
+    <section class="panel hidden" id="panel-lookup">
     <h2>查商品 <small>粘贴虾皮台湾商品链接或输入「店铺ID 商品ID」，直接抓真实数据</small></h2>
     <div class="lookup-box">
       <input id="lookupInput" type="text" placeholder="例如：https://shopee.tw/商品名-i.123456789.987654321  或  123456789 987654321" autocomplete="off">
@@ -233,37 +216,8 @@
   </section>
 
   <!-- 行业大盘（对标知虾「行业大盘 / 潜力品类」） -->
-  <section class="panel hidden" id="panel-market">
-    <h2>行业大盘 <small>各品类商品规模、价格、销量、竞争度与蓝海指数（数据来自已采集的真实商品）</small></h2>
-    <div class="mkt-cards" id="mktCards"></div>
-    <div class="tip">💡 <b>蓝海指数</b>=需求(均销量)高、竞争(商品数)低、质量(均评分)好 → 分数越高越「蓝」，越值得切入。</div>
-  </section>
-
-  <!-- 榜单（对标知虾「产品分析」多榜单） -->
-  <section class="panel hidden" id="panel-rankings">
-    <div class="seg" id="rankSeg">
-      <button class="seg-btn active" data-kind="hot">🔥 热销榜</button>
-      <button class="seg-btn" data-kind="popular">❤ 高人气榜</button>
-      <button class="seg-btn" data-kind="rating">⭐ 高评分榜</button>
-      <button class="seg-btn" data-kind="new">🆕 新品榜</button>
-    </div>
-    <div class="table-scroll">
-      <table class="grid" id="tblRank">
-        <thead><tr>
-          <th class="rk">#</th>
-          <th>商品</th>
-          <th class="num">价格</th>
-          <th class="num" id="rankMetricHdr">销量</th>
-          <th>店铺</th>
-          <th>品类</th>
-          <th></th>
-        </tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </section>
-
-  <!-- 店铺分析（对标知虾「店铺分析」） -->
+    <!-- 榜单（对标知虾「产品分析」多榜单） -->
+    <!-- 店铺分析（对标知虾「店铺分析」） -->
   <section class="panel hidden" id="panel-shops">
     <h2>店铺分析 <small>按「月销&gt;30 商品数」排行 · 点击店铺查看全部在录商品</small></h2>
     <div class="lib-filters">
@@ -335,6 +289,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260910f"></script>
+<script src="app.js?v=20260910g"></script>
 </body>
 </html>
