@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260910j"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260910k"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -110,6 +110,9 @@
   const priceSanity = (p) => (p == null ? false : Number(p) > PRICE_SANITY_MAX);
   const FLAG_PRICE_WARN = ' <span style="color:#c0392b;font-size:11px;font-weight:600;white-space:nowrap;" title="价格疑似未正确换算，待复核">⚠ 价格待校验</span>';
   const FLAG_PRICE_FIXED = ' <span style="color:#2e7d32;font-size:11px;font-weight:600;white-space:nowrap;" title="此价格已由系统按单位换算规则自动校正">✓ 价格已校正</span>';
+  // 总销被修正：原始「累计总销」小于「月销」——物理上不可能（月销是总销的近 30 天子集），
+  // 出现即说明总销那一路解析抓错了数。原值保留在 sold_total_raw，供排查与导出自查。
+  const FLAG_SOLD_FIXED = ' <span style="color:#8a6d1f;font-size:11px;font-weight:600;white-space:nowrap;" title="原始累计总销小于月销（不可能），已按「月销是总销的下界」修正；原始值保留在 sold_total_raw">✓ 总销已修正</span>';
 
   // ---------- 加载 ----------
   // 即使 analysis.json 失败也尽量 boot，避免整页白屏 / 「网站打不开」
@@ -895,20 +898,33 @@
     if (!txt) return "";
     return `<span class="pcard-fresh lv-${freshLevel(ts)}" title="最后采集：${fmtStamp(ts)}">${txt}</span>`;
   }
-  // 陈旧数据的「出路」。
-  // 为什么要有：新鲜度角标 >7 天转红，但那是**提醒**不是**动作**——用户看到红色之后无事可做，
-  // 只能干瞪眼。这里给陈旧商品一个零风控入口：打开虾皮原商品页，录制器被动录到就会刷新这条数据。
-  // 刻意只做「开一个页面」：不主动发请求、不批量翻页、不后台轮询，避免触发虾皮风控。
+  // 数据缺口的「出路」：把「这数据不可信」变成「点一下就能修」。
+  // 为什么要有：新鲜度角标 >7 天会转红，但那只是**提醒**不是**动作** —— 用户看到红色之后无事可做。
+  // 触发条件三类，按「最该先修」排，一张卡只给一个入口，不堆按钮：
+  //   ① 数据陈旧（>7 天） ② 缺价格 ③ 缺名称/主图
+  // 这三类正好就是「数据体检条」里点出的缺口：体检条只负责报数，这里给每一件一个动作。
+  // 刻意只做「开一个页面」：不主动发请求、不批量翻页、不后台轮询，对虾皮零风控。
   function recheckHtml(it) {
     if (!cardCfg().fresh) return "";
-    const ts = normTs(it.last_seen || it.first_seen);
-    if (!ts) return "";
-    if (freshLevel(ts) !== "stale") return "";           // 只有 >7 天且标红的商品才给入口
     const url = String(it.url || "");
-    if (!/^https:\/\/shopee\.tw\/product\/\d+\/\d+/.test(url)) return "";
-    const days = Math.floor((Date.now() / 1000 - ts) / 86400);
-    return `<a class="pcard-recheck" href="${esc(url)}" target="_blank" rel="noopener noreferrer"`
-      + ` title="打开虾皮原商品页，录制器会自动刷新这条数据">↻ 已 ${days} 天，去重录</a>`;
+    // 不用反斜杠转义，避免任何一层字符串处理把 \/ 吃掉（踩过）
+    if (!/^https:[/][/]shopee[.]tw[/]product[/][0-9]+[/][0-9]+/.test(url)) return "";
+    const ts = normTs(it.last_seen || it.first_seen);
+    let label = "";
+    let tip = "打开虾皮原商品页，录制器会自动刷新这条数据";
+    if (ts && freshLevel(ts) === "stale") {
+      label = "↻ 已 " + Math.floor((Date.now() / 1000 - ts) / 86400) + " 天，去重录";
+    } else if (!(Number(it.price) > 0)) {
+      label = "↻ 缺价格，去重录";
+      tip = "这条没采到价格（旧版记录或页面未展示），打开原页重录即可补上";
+    } else if (!it.name || !it.img) {
+      label = "↻ 缺" + ((!it.name && !it.img) ? "名称和图" : (!it.name ? "名称" : "主图")) + "，去重录";
+      tip = "这条缺关键信息，打开原页重录即可补上";
+    } else {
+      return "";                       // 数据又新又全 → 不给入口，不制造噪音
+    }
+    return '<a class="pcard-recheck" href="' + esc(url) + '" target="_blank" rel="noopener noreferrer"'
+      + ' title="' + esc(tip) + '">' + label + "</a>";
   }
 
   // ---------- 卡片显示字段（2026-09-10 新增）----------
@@ -1285,7 +1301,7 @@
         els.loc.innerHTML =
           '<option value="">全部</option>' +
           L.locs.map((l) => `<option value="${l.name}">${esc(l.name)} (${l.count})</option>`).join("");
-        syncFilterOptions(els.cat); syncFilterOptions(els.loc);
+        syncFilterOptions(els.cat); syncFilterOptions(els.loc); syncRatingFilter();
       } else {
         loadCatalogFallback(els);
       }
@@ -1586,7 +1602,7 @@
           Object.keys(cats).map((c) => `<option value="${esc(c)}">${esc(c)} (${cats[c]})</option>`).join("");
         els.loc.innerHTML = '<option value="">全部</option>' +
           Object.keys(locs).map((l) => `<option value="${esc(l)}">${esc(l)} (${locs[l]})</option>`).join("");
-        syncFilterOptions(els.cat); syncFilterOptions(els.loc);
+        syncFilterOptions(els.cat); syncFilterOptions(els.loc); syncRatingFilter();
       })
       .catch(() => {});
   }
@@ -1598,6 +1614,76 @@
     const lb = sel.closest("label");
     if (!lb) return;
     lb.style.display = sel.options.length > 1 ? "" : "none";
+  }
+
+  // 「最低评分」筛选：rating 在 491 件里覆盖率 0%（从未采集），
+  // 一设就必然 0 条 —— 是个会把列表清空却不解释的死控件。没有评分数据时直接隐藏，
+  // 采集器哪天补上评分就自动回来（判据与主站一致：全库无一件 rating>0）。
+  function hasRatingData(items) {
+    for (let i = 0; i < (items || []).length; i++) if (Number(items[i].rating) > 0) return true;
+    return false;
+  }
+  function syncRatingFilter() {
+    const el = $("#libMinRating");
+    if (!el) return;
+    const lb = el.closest("label");
+    if (!lb) return;
+    const raw = (state.catalogAll && (state.catalogAll._rawItems || state.catalogAll.items)) || [];
+    lb.style.display = hasRatingData(raw) ? "" : "none";
+  }
+
+  // ---------- 数据体检条（2026-09-10）----------
+  // 为什么要有：缺价格 15%、缺名称/主图 10% —— 这些商品在卡片上长得像正常商品，
+  // 用户会把「未采集」当成「真的是 0」，选品判断直接跑偏。
+  // 与其让用户自己一个个发现，不如把整库缺口摊在最显眼的一行上，并且给出动作（卡片上的「↻ 去重录」）。
+  const HEALTH_KEY = "shopee_health_v1";
+  function dataHealth(items) {
+    const now = Date.now() / 1000;
+    const h = { total: 0, noPrice: 0, noMeta: 0, soldFix: 0, stale: 0, noRange: 0, priceWarn: 0 };
+    (items || []).forEach((it) => {
+      h.total++;
+      if (!(Number(it.price) > 0)) h.noPrice++;
+      if (!it.name || !it.img) h.noMeta++;
+      if (it.sold_repaired) h.soldFix++;
+      if (priceSanity(it.price)) h.priceWarn++;
+      // 价格区间：多规格商品才有 price_max（>price）。旧版录制器不采 → 全库 0 条区间
+      if (Number(it.price) > 0 && !(Number(it.price_max) > Number(it.price))) h.noRange++;
+      const ts = normTs(it.last_seen || it.first_seen);
+      if (ts && now - ts > 7 * 86400) h.stale++;
+    });
+    return h;
+  }
+  function renderLibHealth() {
+    const el = $("#libHealth");
+    if (!el) return;
+    if (localStorage.getItem(HEALTH_KEY) === "off") { el.classList.add("hidden"); return; }
+    const raw = (state.catalogAll && (state.catalogAll._rawItems || state.catalogAll.items)) || [];
+    if (!raw.length) { el.classList.add("hidden"); return; }
+    const h = dataHealth(raw);
+    const parts = [];
+    if (h.noPrice) parts.push("缺价格 <b>" + fmt(h.noPrice) + "</b>");
+    if (h.noMeta) parts.push("缺名称/主图 <b>" + fmt(h.noMeta) + "</b>");
+    if (h.priceWarn) parts.push("价格待校验 <b>" + fmt(h.priceWarn) + "</b>");
+    if (h.soldFix) parts.push("总销已修正 <b>" + fmt(h.soldFix) + "</b>");
+    if (h.stale) parts.push("超 7 天未更新 <b>" + fmt(h.stale) + "</b>");
+    if (!parts.length) { el.classList.add("hidden"); return; }
+    // 价格区间是全库性的缺口（需要 v3.1.9 重录才会产生），单独一句话讲清楚，不混进计数胶囊里
+    const rangeNote = h.noRange > h.total * 0.5
+      ? "价格区间需用录制器 v3.1.9 重录后才会出现；"
+      : "";
+    el.innerHTML = '<span class="hb-title">📋 数据体检</span>'
+      + parts.map((p) => '<span class="hb-item">' + p + "</span>").join("")
+      + '<span class="hb-note">全库 ' + fmt(h.total) + " 件。" + rangeNote
+      + '卡片上的「↻ 去重录」可逐件补齐（打开原页即可，零风控）。</span>'
+      + '<button class="hb-close" title="知道了，不再提示">×</button>';
+    el.classList.remove("hidden");
+    const c = el.querySelector(".hb-close");
+    if (c) {
+      c.addEventListener("click", () => {
+        try { localStorage.setItem(HEALTH_KEY, "off"); } catch (e) {}
+        el.classList.add("hidden");
+      });
+    }
   }
 
   function applyLibFilters(items, L) {
@@ -1663,6 +1749,7 @@
     //   视口内的商品图要重新解码（甚至重新请求）→ 翻页/排序/勾选/心跳刷新都会「闪一下 + 卡一下」。
     //   签名 = 筛选条件 + 页码 + 本页商品 id 序列 + 选中态 + 数据版本；
     //   完全一致说明画面本来就长这样，直接跳过重建。
+    renderLibHealth();          // 体检条只依赖全量库，不依赖筛选 → 放在指纹去重之前，保证数据变了就一定刷新
     const selSig = libSel && libSel.selected ? Array.from(libSel.selected).sort().join(",") : "";
     const sig = [L.q, L.cat, L.loc, L.sort, L.min_price, L.max_price, L.min_sold, L.min_month,
       L.min_rating, L.page, L.size, L.total, items.length, _loadedCatalogTs, selSig,
@@ -2948,7 +3035,8 @@
     const meta = [];
     // rating 从未被采集 → 恒为 0。摆一排「★ 0」是纯噪音，有真实评分才显示。
     if (cfg.rating && Number(it.rating) > 0) meta.push(`<span class="stars" title="评分 ${it.rating}">${starStr(it.rating)} <b>${it.rating}</b></span>`);
-    if (cfg.sales) meta.push(`<span class="muted" title="周/月/总销量">周${fmt(it.week_sold)} · 月${fmtMonth(it.month_sold)} · 总${fmt(it.sold_total)}</span>`);
+    if (cfg.sales) meta.push(`<span class="muted" title="周/月/总销量">周${fmt(it.week_sold)} · 月${fmtMonth(it.month_sold)} · 总${fmt(it.sold_total)}</span>`
+      + (it.sold_repaired ? FLAG_SOLD_FIXED : ""));
     if (cfg.official && it.official) meta.push('<span class="badge official">官方</span>');
     const where = [cfg.shop ? esc(it.shop || "—") : "", cfg.loc ? esc((it.loc || "").slice(0, 6)) : ""].filter(Boolean).join(" · ");
     return `<div class="pcard" data-id="${esc(libItemId(it))}">
@@ -3385,9 +3473,19 @@
       if (!it.id && sid != null && iid != null) it.id = sid + "_" + iid;
       if (!it.url && sid != null && iid != null) it.url = "https://shopee.tw/product/" + sid + "/" + iid;
       const ms = Number(it.month_sold) || 0;
-      const ts = Number(it.sold_total != null ? it.sold_total : it.total_sold) || 0;
+      let ts = Number(it.sold_total != null ? it.sold_total : it.total_sold) || 0;
       it.month_sold = ms;
       it.monthly_sold = ms;            // 补齐别名：详情弹窗/热销/飙升表读的是 monthly_sold
+      // ★ 总销一致性修正（2026-09-10 数据体检发现 7 件「月销 > 总销」）：
+      //   月销必然是「累计总销」在最近 30 天的子集，所以 总销 < 月销 在物理上不可能 ——
+      //   出现就说明总销那一路（列表卡 SSR 文本解析）抓错了数。实测有「月销 3000 / 总销 2」这种，
+      //   它的后果不只是显示难看：热销榜按总销排序，这种真爆款会被排到最后一名。
+      //   处理：把总销抬到月销（月销是总销的**下界**，抬到它一定不会高估），并打角标说明被修正过。
+      if (ms > ts && ts >= 0) {
+        it.sold_total_raw = ts;        // 留原始值，供排查与导出自查
+        ts = ms;
+        it.sold_repaired = true;
+      }
       it.sold_total = ts;
       it.total_sold = ts;
       if (it.sold == null) it.sold = ms;                     // sold 口径 = 月销量

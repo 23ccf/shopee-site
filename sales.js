@@ -117,6 +117,10 @@
       var ts = Number(it.sold_total != null ? it.sold_total : it.total_sold) || 0;
       it.month_sold = ms;
       it.monthly_sold = ms;
+      // 总销一致性修正（与 app.js normalizeCatalog 同口径，三页必须一致）：
+      // 月销是「累计总销」近 30 天的子集 → 总销 < 月销 物理上不可能，出现即说明总销那一路解析抓错了。
+      // 不做这一步，「累计总销」列会显示成 2 这种不可能的数，还会污染排行与聚合。
+      if (ms > ts && ts >= 0) { it.sold_total_raw = ts; ts = ms; it.sold_repaired = true; }
       it.sold_total = ts;
       it.total_sold = ts;
       if (it.sold == null) it.sold = ms;

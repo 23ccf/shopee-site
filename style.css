@@ -178,6 +178,19 @@ table.grid{width:100%;border-collapse:collapse;font-size:13px}
 .lib-filters select:focus,.lib-filters .lib-num:focus{border-color:var(--accent)}
 .lib-num{width:96px}
 .lib-count{font-size:13px;color:var(--muted);margin:4px 0 12px}
+/* 数据体检条（2026-09-10）：把整库的字段缺口摊在明面上。
+   为什么要放在最显眼的位置：缺价格 15%、缺名称/图 10% —— 这些商品在卡片上长得像「正常商品」，
+   用户会把「未采集」当成「真的是 0」，选品判断直接跑偏。一行说清楚比让用户自己发现要好。 */
+.lib-health{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;font-size:12.5px;line-height:1.7;
+  background:#fffdf7;border:1px solid #f0dcae;border-radius:10px;padding:9px 12px;margin:0 0 12px;color:#7a5a17}
+.lib-health .hb-title{font-weight:700;color:#8a5a12;white-space:nowrap}
+.lib-health .hb-item{background:rgba(255,255,255,.7);border:1px solid #f0dcae;border-radius:20px;
+  padding:1px 9px;white-space:nowrap}
+.lib-health .hb-item b{color:#b03030}
+.lib-health .hb-note{color:#8d7a4f}
+.lib-health .hb-close{margin-left:auto;background:none;border:none;color:#b09060;cursor:pointer;
+  font-size:15px;line-height:1;padding:0 2px}
+.lib-health .hb-close:hover{color:#8a5a12}
 .lib-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px}
 .pcard{background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;
   cursor:pointer;transition:.15s;display:flex;flex-direction:column}
