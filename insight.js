@@ -313,8 +313,9 @@
       sRep = Math.max(0, Math.min(100, sRep));
 
       // 4) 价格带分：越接近甜区越高（对数距离衰减）
+      var hasPrice = p > 0;
       var sPrice = 0;
-      if (p > 0) {
+      if (hasPrice) {
         var dist = Math.abs(Math.log(p / sweet));       // 0 表示正好在甜区
         sPrice = Math.max(0, 100 - dist * 55);
       }
@@ -323,8 +324,13 @@
       var peer = (simMap[id] || []).length;              // 含自己
       var sComp = Math.max(0, 100 - (peer - 1) * 12);
 
-      var total = (sSold * w.sold + sGrow * w.grow + sRep * w.rep +
-                   sPrice * w.price + sComp * w.comp) / wSum;
+      // 价格没采到的商品（线上 74/491 件）不参与「价格带」这一项，分母同步扣掉它的权重。
+      // 否则它在这一项白拿 0 分 —— 等于把「没采到」当成「价格很差」，最多白扣 10 分，
+      // 让这批商品在排行榜上被系统性压低，用户会直接漏掉它们。这是静默的数据质量偏差。
+      var wEff = hasPrice ? wSum : (wSum - w.price);
+      var total = hasPrice
+        ? (sSold * w.sold + sGrow * w.grow + sRep * w.rep + sPrice * w.price + sComp * w.comp) / wSum
+        : (sSold * w.sold + sGrow * w.grow + sRep * w.rep + sComp * w.comp) / (wEff > 0 ? wEff : 1);
 
       return {
         id: id, name: it.name || id, price: p, month: month, sold: soldOf(it),
@@ -363,6 +369,18 @@
     var avg = state.scored.length
       ? state.scored.reduce(function (a, x) { return a + x.score; }, 0) / state.scored.length : 0;
     var top = state.scored[0];
+    var noPrice = state.scored.filter(function (x) { return !(x.price > 0); }).length;
+
+    // 「只看分档」下拉标出每档真实件数：S 档阈值 85 在现有数据下常常 0 件，
+    // 不标数字的话用户会点进去、看到空列表、以为页面坏了。数字本身就是答案。
+    var gfSel = $("gradeFilter");
+    if (gfSel) {
+      var labelOf = { S: "S 档（≥85）", A: "A 档（≥70）", B: "B 档（≥55）", C: "C 档（<55）" };
+      Array.prototype.forEach.call(gfSel.options, function (op) {
+        if (!labelOf[op.value]) return;
+        op.textContent = labelOf[op.value] + " · " + c[op.value] + " 件";
+      });
+    }
 
     $("scoreStatBox").innerHTML =
       '<div class="stat"><div class="k">参评商品</div><div class="v">' +
@@ -374,6 +392,8 @@
       '<div class="stat"><div class="k">B / C 档</div><div class="v flat">' +
         (c.B + c.C) + '</div><div class="sub">B ' + c.B + ' / C ' + c.C + '</div></div>' +
       (state.noRepData ? '<div class="stat"><div class="k">口碑权重</div><div class="v flat">已并入销量</div><div class="sub">未采集评分数据</div></div>' : '') +
+      (noPrice ? '<div class="stat"><div class="k">价格未采集</div><div class="v flat">' +
+        fmt(noPrice) + '</div><div class="sub">不参与价格带评分，不因此扣分</div></div>' : '') +
       '<div class="stat"><div class="k">最高分商品</div>' +
         '<div class="v up" style="font-size:15px;line-height:1.4">' +
         esc(String(top ? top.name : "—").slice(0, 16)) + '</div>' +
@@ -386,10 +406,14 @@
     }
 
     var show = list.slice(0, 100);
+    // 「评分 / 评价」两列：rating / reviews 在 491 件里覆盖率是 0%（从未被采集），
+    // 每行恒为「—」和 0 —— 那是纯噪音，不是信息。所以这两列改成**有数据才显示**：
+    // 采集器哪天补上评分就自动出现，没有就整列不占地方。
+    var hasRep = !state.noRepData;
     var html = '<table><thead><tr>' +
       '<th style="width:40px">档</th><th style="width:110px">综合分</th><th>商品</th>' +
       '<th class="num">月销</th><th class="num">累计</th>' +
-      '<th class="num">评分</th><th class="num">评价</th>' +
+      (hasRep ? '<th class="num">评分</th><th class="num">评价</th>' : '') +
       '<th class="num">价格</th><th class="num">同款数</th><th class="num">增长</th>' +
       '</tr></thead><tbody>';
     show.forEach(function (x) {
@@ -407,14 +431,24 @@
             esc(x.shop) + '</div>' : '') + '</td>' +
         '<td class="num">' + fmt(x.month) + '</td>' +
         '<td class="num flat">' + fmt(x.sold) + '</td>' +
-        '<td class="num">' + (x.rating ? x.rating.toFixed(1) : "—") + '</td>' +
-        '<td class="num flat">' + fmt(x.reviews) + '</td>' +
-        '<td class="num">NT$' + fmt(x.price) + '</td>' +
+        (hasRep ? '<td class="num">' + (x.rating ? x.rating.toFixed(1) : "—") + '</td>' +
+                  '<td class="num flat">' + fmt(x.reviews) + '</td>' : '') +
+        // 价格缺失（74/491 件）不能显示成 NT$0：那是把「没采到」包装成「零元」，
+        // 既误导又会让它霸占「价格低→高」的第一屏。
+        '<td class="num">' + (x.price > 0 ? 'NT$' + fmt(x.price)
+          : '<span class="flat" title="这条商品的价格没采到">未采集</span>') + '</td>' +
         '<td class="num ' + (x.peers > 3 ? "down" : "") + '">' + x.peers + '</td>' +
         '<td class="num">' + gt + '</td>' +
         '</tr>';
     });
     html += '</tbody></table>';
+    // 「增长」需要两天以上的价格/销量记录才会出数，第一次用必然全是「—」。
+    // 不解释的话用户会以为坏了；写清楚它是在攒数据，明后天自动就有。
+    if (!state.scored.some(function (x) { return x.grow !== null; })) {
+      html += '<div style="margin-top:10px;font-size:12px;color:var(--muted)">' +
+        '「增长」列需要两天以上的记录做对比，现在只有 1 天，明后天打开就会自动出数。' +
+        '（每天首次打开本页会自动记一次）</div>';
+    }
     if (list.length > show.length) {
       html += '<div style="margin-top:10px;font-size:12px;color:var(--muted)">' +
         '仅显示前 ' + show.length + ' 件（共 ' + list.length + ' 件）</div>';
