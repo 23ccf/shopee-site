@@ -509,7 +509,8 @@
       msg = "点「记录今日快照」开始积累数据。建议每天固定时间记一次。";
       if (state.prefs.autoSnap) msg += "（已开启自动记录，下次打开即会自动记一次）";
     }
-    $("snapMsg").textContent = msg;
+    $("snapMsg").innerHTML = esc(msg) +
+      (state.srcMsg ? "<br><span style='font-size:12px'>" + esc(state.srcMsg) + "</span>" : "");
 
     // 对比基准下拉
     var sel = $("baseSel");
@@ -1377,7 +1378,9 @@
     state.snaps = loadSnaps();
     state.srcUrl = srcUrl || "";
     var host = (srcUrl || "").replace(/^https:\/\//, "").split("/")[0];
-    $("snapMsg").textContent = "已加载 " + state.items.length + " 件商品" +
+    // 数据源信息存起来，交给 renderSnapInfo() 统一渲染，
+    // 否则会被随后的快照状态文案覆盖掉（这行是用户确认「有没有同步上」的关键信息）
+    state.srcMsg = "已加载 " + state.items.length + " 件商品" +
       (host ? "（数据源：" + host + "）" : "");
     renderAll();
     autoSnapshot();     // 每天首次打开自动补一次快照（已在今天记过则跳过）
