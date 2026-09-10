@@ -13,6 +13,8 @@
   "use strict";
 
   var LS_KEY = "shopee_track_v1";
+  var INV_KEY = "shopee_inv_v1";   // 库存与成本：{ "<id>": {stock, cost} }
+  var PO_KEY = "shopee_po_v1";     // 采购单默认参数（备货周期/安全天数等）
   var MAX_DAYS = 90;          // 最多保留 90 天快照
   var WARN_DAYS = 3;          // 连续 N 天零增长 → 滞销预警
 
@@ -20,7 +22,12 @@
     items: [],       // 当前 catalog
     snaps: null,     // 快照对象
     loaded: false,
-    deltas: []       // 最近一次计算的日增列表
+    deltas: [],      // 最近一次计算的日增列表
+    inv: {},         // 库存与成本表
+    invPage: 0,      // 库存表当前页
+    invQuery: "",    // 库存表搜索词
+    fcRows: [],      // 最近一次补货建议
+    fcSel: {}        // 采购单勾选：{ "<id>": true }
   };
 
   /* ---------------- 工具 ---------------- */
@@ -68,6 +75,45 @@
       return "https://shopee.tw/product/" + p[0] + "/" + p[1];
     }
     return "#";
+  }
+
+  /* ---------------- 字段归一化 ----------------
+   * 线上 catalog 的 item 只有 shopid / itemid，**没有 id 和 url**；
+   * 主站 app.js 有 normalizeCatalog() 会推导，本页也需要，否则
+   * 全部商品会塌缩成同一个 id "undefined"。此处与 app.js 保持同一口径。 */
+  function normPrice(v) {
+    var n = Number(v) || 0;
+    for (var i = 0; i < 2 && n > 1000000; i++) n = n / 100000;
+    return n;
+  }
+
+  function normCatalog(doc) {
+    var items = (doc && doc.items) || (Array.isArray(doc) ? doc : []);
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (!it || typeof it !== "object" || it._n) continue;
+      var sid = it.shopid, iid = it.itemid;
+      if (!it.id && sid != null && iid != null) it.id = String(sid) + "_" + String(iid);
+      if (!it.url && sid != null && iid != null) {
+        it.url = "https://shopee.tw/product/" + sid + "/" + iid;
+      }
+      var ms = Number(it.month_sold) || 0;
+      var ts = Number(it.sold_total != null ? it.sold_total : it.total_sold) || 0;
+      it.month_sold = ms;
+      it.monthly_sold = ms;
+      it.sold_total = ts;
+      it.total_sold = ts;
+      if (it.sold == null) it.sold = ms;
+      if (it.week_sold == null) it.week_sold = ms > 0 ? Math.round(ms / 4.345) : 0;
+      if (it.name == null) it.name = "";
+      it.price = normPrice(it.price);
+      if (it.shop == null) it.shop = it.shop_name || "";
+      if (it.shop_name == null) it.shop_name = it.shop;
+      if (!it.first_seen) it.first_seen = 0;
+      if (!it.last_seen) it.last_seen = it.first_seen || 0;
+      it._n = 1;
+    }
+    return items;
   }
 
   /* ---------------- 数据加载 ---------------- */
@@ -119,7 +165,7 @@
           var u = urls[i++];
           tryFetch(u, 9000)
             .then(function (d) {
-              var items = d.items || (Array.isArray(d) ? d : []);
+              var items = normCatalog(d);
               if (!items.length) throw new Error("数据为空");
               cb(null, items, u);
             })
@@ -154,6 +200,86 @@
       toast("存储空间不足，请先清空旧快照");
       return false;
     }
+  }
+
+  /* ---------------- 库存与成本 ---------------- */
+
+  function loadInv() {
+    try {
+      var raw = localStorage.getItem(INV_KEY);
+      if (raw) {
+        var o = JSON.parse(raw);
+        if (o && typeof o === "object") return o;
+      }
+    } catch (e) { /* 忽略损坏数据 */ }
+    return {};
+  }
+
+  function saveInv() {
+    try {
+      localStorage.setItem(INV_KEY, JSON.stringify(state.inv));
+      return true;
+    } catch (e) {
+      toast("库存数据保存失败（浏览器存储空间不足）");
+      return false;
+    }
+  }
+
+  // 取某商品的库存/成本，缺省为 0
+  function invOf(id) {
+    var r = state.inv[String(id)];
+    if (!r) return { stock: 0, cost: 0, hasStock: false, hasCost: false };
+    var stock = Number(r.stock) || 0;
+    var cost = Number(r.cost) || 0;
+    return {
+      stock: stock, cost: cost,
+      hasStock: r.stock !== undefined && r.stock !== null && r.stock !== "",
+      hasCost: cost > 0
+    };
+  }
+
+  function setInvField(id, field, val) {
+    id = String(id);
+    var v = (val === "" || val === null || val === undefined) ? null : Number(val);
+    if (v !== null && (isNaN(v) || v < 0)) v = null;
+    if (!state.inv[id]) state.inv[id] = {};
+    state.inv[id][field] = v;
+    // 两个字段都空 → 删掉，保持存储干净
+    var r = state.inv[id];
+    var e1 = r.stock !== undefined && r.stock !== null && r.stock !== "";
+    var e2 = r.cost !== undefined && r.cost !== null && r.cost !== "";
+    if (!e1 && !e2) delete state.inv[id];
+  }
+
+  /* ---------------- CSV 导出 ---------------- */
+
+  function csvCell(v) {
+    var s = (v === null || v === undefined) ? "" : String(v);
+    if (/[",\n]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
+    return s;
+  }
+
+  function downloadCSV(filename, rows) {
+    // 加 BOM，Excel 打开中文不乱码
+    var text = "\ufeff" + rows.map(function (r) {
+      return r.map(csvCell).join(",");
+    }).join("\r\n");
+    var blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+  }
+
+  function stamp() {
+    var d = new Date();
+    return d.getFullYear() + String(d.getMonth() + 1).padStart(2, "0") +
+      String(d.getDate()).padStart(2, "0") + "-" +
+      String(d.getHours()).padStart(2, "0") + String(d.getMinutes()).padStart(2, "0");
   }
 
   function takeSnapshot() {
@@ -438,6 +564,150 @@
     renderStats();
     renderRank();
     renderWarn();
+    renderInv();
+  }
+
+  /* ---------------- 库存与成本：渲染 ---------------- */
+
+  // 汇总成库存表的数据源（catalog 优先，缺失时回退快照 meta）
+  function invSource() {
+    var seen = {};
+    var list = [];
+    (state.items || []).forEach(function (it) {
+      var id = String(it.id);
+      if (seen[id]) return;
+      seen[id] = 1;
+      list.push({
+        id: id,
+        name: it.name || id,
+        price: Number(it.price) || 0,
+        shop: (it.shop_name || it.shop || ""),
+        url: itemUrl(it)
+      });
+    });
+    var s = state.snaps;
+    if (s && s.meta) {
+      Object.keys(s.meta).forEach(function (id) {
+        if (seen[id]) return;
+        seen[id] = 1;
+        var m = s.meta[id];
+        list.push({
+          id: id, name: m.name || id, price: Number(m.price) || 0,
+          shop: m.shop || "", url: m.url || "#"
+        });
+      });
+    }
+    return list;
+  }
+
+  function invFiltered() {
+    var q = (state.invQuery || "").trim().toLowerCase();
+    var mode = ($("invFilter") && $("invFilter").value) || "all";
+    return invSource().filter(function (r) {
+      if (q) {
+        var hay = (r.name + " " + r.shop + " " + r.id).toLowerCase();
+        if (hay.indexOf(q) < 0) return false;
+      }
+      if (mode !== "all") {
+        var iv = invOf(r.id);
+        var filled = iv.hasStock || iv.hasCost;
+        if (mode === "filled" && !filled) return false;
+        if (mode === "empty" && filled) return false;
+      }
+      return true;
+    });
+  }
+
+  function renderInv() {
+    var box = $("invBox");
+    if (!box) return;
+    var all = invSource();
+    if (!all.length) {
+      box.innerHTML = '<div class="empty-hint"><div class="ico">📦</div>' +
+        '还没有商品数据，点上方「刷新数据」或稍后重试</div>';
+      $("invCount").textContent = "";
+      $("invPager").innerHTML = "";
+      return;
+    }
+
+    var rows = invFiltered();
+    var size = parseInt(($("invPageSize") && $("invPageSize").value) || "50", 10) || 50;
+    var pages = Math.max(1, Math.ceil(rows.length / size));
+    if (state.invPage >= pages) state.invPage = pages - 1;
+    if (state.invPage < 0) state.invPage = 0;
+    var start = state.invPage * size;
+    var show = rows.slice(start, start + size);
+
+    var filledCnt = 0;
+    all.forEach(function (r) { var iv = invOf(r.id); if (iv.hasStock || iv.hasCost) filledCnt++; });
+
+    $("invCount").textContent = "共 " + all.length + " 件商品　已填 " + filledCnt + " 件" +
+      (rows.length !== all.length ? "　筛选后 " + rows.length + " 件" : "");
+
+    if (!rows.length) {
+      box.innerHTML = '<div class="empty-hint"><div class="ico">🔍</div>没有匹配的商品</div>';
+      $("invPager").innerHTML = "";
+      return;
+    }
+
+    var html = '<table><thead><tr>' +
+      '<th style="width:36px">#</th><th>商品</th>' +
+      '<th class="num">售价</th>' +
+      '<th class="num" style="width:110px">现有库存</th>' +
+      '<th class="num" style="width:110px">进货成本</th>' +
+      '<th class="num">单件毛利</th><th class="num">毛利率</th>' +
+      '</tr></thead><tbody>';
+
+    show.forEach(function (r, i) {
+      var iv = invOf(r.id);
+      var price = r.price || 0;
+      var cost = iv.cost;
+      var margin = (price > 0 && cost > 0) ? (price - cost) : null;
+      var marginPct = (margin !== null && price > 0) ? (margin / price * 100) : null;
+      var mCls = margin === null ? "flat" : (margin >= 0 ? "margin-pos" : "margin-neg");
+
+      html += '<tr data-id="' + esc(r.id) + '" data-price="' + price + '">' +
+        '<td class="flat">' + (start + i + 1) + '</td>' +
+        '<td class="pname"><a href="' + esc(r.url) + '" target="_blank" rel="noopener">' +
+          esc(r.name) + '</a>' +
+          (r.shop ? '<div style="font-size:11px;color:var(--muted)">' + esc(r.shop) + '</div>' : '') +
+        '</td>' +
+        '<td class="num">NT$' + fmt(price) + '</td>' +
+        '<td class="num"><input class="inv-input' + (iv.hasStock ? " inv-filled" : "") +
+          '" type="number" min="0" step="1" data-id="' + esc(r.id) + '" data-field="stock"' +
+          ' placeholder="0" value="' + (iv.hasStock ? iv.stock : "") + '"></td>' +
+        '<td class="num"><input class="inv-input' + (iv.hasCost ? " inv-filled" : "") +
+          '" type="number" min="0" step="0.01" data-id="' + esc(r.id) + '" data-field="cost"' +
+          ' placeholder="0" value="' + (iv.hasCost ? iv.cost : "") + '"></td>' +
+        '<td class="num margin-cell ' + mCls + '">' +
+          (margin === null ? "—" : ("NT$" + fmt(Math.round(margin * 100) / 100))) + '</td>' +
+        '<td class="num marginpct-cell ' + mCls + '">' +
+          (marginPct === null ? "—" : (marginPct.toFixed(1) + "%")) + '</td>' +
+        '</tr>';
+    });
+    html += '</tbody></table>';
+    box.innerHTML = html;
+
+    renderPager(pages, rows.length, start, show.length);
+  }
+
+  function renderPager(pages, total, start, shown) {
+    var el = $("invPager");
+    if (!el) return;
+    if (pages <= 1) { el.innerHTML = ""; return; }
+    var p = state.invPage;
+    var h = '<button data-p="prev"' + (p === 0 ? " disabled" : "") + '>‹ 上一页</button>';
+    // 页码窗口
+    var from = Math.max(0, p - 2), to = Math.min(pages - 1, from + 4);
+    from = Math.max(0, Math.min(from, to - 4));
+    if (from > 0) h += '<button data-p="0">1</button><span style="color:var(--muted)">…</span>';
+    for (var i = from; i <= to; i++) {
+      h += '<button data-p="' + i + '"' + (i === p ? ' class="on"' : "") + '>' + (i + 1) + '</button>';
+    }
+    if (to < pages - 1) h += '<span style="color:var(--muted)">…</span><button data-p="' + (pages - 1) + '">' + pages + '</button>';
+    h += '<button data-p="next"' + (p >= pages - 1 ? " disabled" : "") + '>下一页 ›</button>';
+    h += '<span style="color:var(--muted);font-size:12px;margin-left:8px">第 ' + (p + 1) + "/" + pages + ' 页</span>';
+    el.innerHTML = h;
   }
 
   /* ---------------- 采购预测 ---------------- */
@@ -454,13 +724,13 @@
   function calcForecast() {
     var lead = parseInt($("leadTime").value, 10) || 14;
     var safety = parseInt($("safetyDays").value, 10) || 0;
-    var stock = parseInt($("stockNow").value, 10) || 0;
     var minQty = parseInt($("minQty").value, 10) || 0;
 
     var s = state.snaps;
     if (!s || !s.dates.length) {
       $("fcBox").innerHTML = '<div class="empty-hint"><div class="ico">📸</div>' +
         '请先记录至少一次快照</div>';
+      $("fcStatBox").innerHTML = "";
       return;
     }
 
@@ -481,30 +751,55 @@
       }
       if (daily < 0) daily = 0;
 
+      var iv = invOf(id);
+      var stock = iv.stock;
+      var price = Number(m.price) || 0;
+      var cost = iv.cost;
+
       var need = daily * (lead + safety);
       var qty = Math.ceil(need - stock);
       if (qty < 0) qty = 0;
 
       var daysLeft = daily > 0 ? (stock / daily) : Infinity;
 
+      // 采购额：优先成本价；未填成本则回退售价（会偏高，需标注）
+      var unitCost = cost > 0 ? cost : price;
+      var costMissing = !(cost > 0);
+      var amount = qty * unitCost;
+
+      // 单件毛利：售价 − 成本（仅当成本已知）
+      var margin = cost > 0 ? (price - cost) : null;
+
       rows.push({
-        id: id, name: m.name || id, price: m.price || 0, url: m.url || "#",
+        id: id, name: m.name || id, price: price, url: m.url || "#",
+        shop: m.shop || "",
         daily: daily, need: need, qty: qty,
-        stock: stock,
-        daysLeft: daysLeft,
-        amount: qty * (m.price || 0)
+        stock: stock, hasStock: iv.hasStock,
+        cost: cost, unitCost: unitCost, costMissing: costMissing,
+        daysLeft: daysLeft, amount: amount,
+        margin: margin,
+        marginPct: (margin !== null && price > 0) ? (margin / price * 100) : null,
+        profit: margin !== null ? margin * qty : null
       });
     });
 
     rows = rows.filter(function (r) { return r.qty > minQty; });
     rows.sort(function (a, b) { return b.qty - a.qty; });
+    state.fcRows = rows;
+
+    // 勾选态只保留仍然存在的行
+    var keep = {};
+    rows.forEach(function (r) { if (state.fcSel[r.id]) keep[r.id] = true; });
+    state.fcSel = keep;
 
     // 统计
-    var totalQty = 0, totalAmt = 0, riskCnt = 0;
+    var totalQty = 0, totalAmt = 0, riskCnt = 0, totalProfit = 0, missingCost = 0;
     rows.forEach(function (r) {
       totalQty += r.qty;
       totalAmt += r.amount;
       if (r.daysLeft < lead) riskCnt++;
+      if (r.profit !== null) totalProfit += r.profit;
+      if (r.costMissing) missingCost++;
     });
 
     $("fcStatBox").innerHTML =
@@ -514,7 +809,12 @@
         '<div class="v">' + fmt(totalQty) + '</div><div class="sub">件</div></div>' +
       '<div class="stat"><div class="k">预估采购额</div>' +
         '<div class="v">NT$' + fmt(Math.round(totalAmt)) + '</div>' +
-        '<div class="sub">按当前单价估算</div></div>' +
+        '<div class="sub">' + (missingCost
+          ? '其中 ' + missingCost + ' 件按售价估算'
+          : '按进货成本计算') + '</div></div>' +
+      '<div class="stat"><div class="k">售出后预计毛利</div>' +
+        '<div class="v">NT$' + fmt(Math.round(totalProfit)) + '</div>' +
+        '<div class="sub">仅统计已填成本的商品</div></div>' +
       '<div class="stat"><div class="k">断货风险</div>' +
         '<div class="v ' + (riskCnt ? "up" : "") + '">' + riskCnt + '</div>' +
         '<div class="sub">库存撑不到到货</div></div>';
@@ -524,25 +824,43 @@
     if (!rows.length) {
       $("fcBox").innerHTML = '<div class="empty-hint"><div class="ico">✅</div>' +
         '没有需要补货的商品（或阈值设太高）</div>';
+      updatePOCount();
       return;
     }
 
-    var show = rows.slice(0, 80);
-    var html = '<table><thead><tr><th>商品</th>' +
+    var show = rows.slice(0, 100);
+    var html = '<table><thead><tr>' +
+      '<th style="width:34px"><input type="checkbox" id="fcHeadChk"></th>' +
+      '<th>商品</th>' +
       '<th class="num">日均销</th><th class="num">备货需求</th>' +
-      '<th class="num">建议补货</th><th class="num">库存可撑</th>' +
-      '<th class="num">预估金额</th><th>风险</th></tr></thead><tbody>';
+      '<th class="num">建议补货</th><th class="num">现有库存</th>' +
+      '<th class="num">库存可撑</th>' +
+      '<th class="num">进货成本</th><th class="num">采购金额</th>' +
+      '<th class="num">单件毛利</th><th>风险</th></tr></thead><tbody>';
     show.forEach(function (r) {
       var risk = r.daysLeft < lead;
       var dl = isFinite(r.daysLeft) ? r.daysLeft.toFixed(0) + " 天" : "∞";
+      var costCell = r.costMissing
+        ? '<span class="flat" title="未填进货成本，按售价估算">未填</span>'
+        : 'NT$' + fmt(r.cost);
+      var mCls = r.margin === null ? "flat" : (r.margin >= 0 ? "margin-pos" : "margin-neg");
+      var mCell = r.margin === null ? "—"
+        : ('NT$' + fmt(Math.round(r.margin * 100) / 100) +
+           ' <span style="font-size:11px;color:var(--muted)">(' +
+           r.marginPct.toFixed(0) + '%)</span>');
       html += '<tr>' +
+        '<td><input type="checkbox" class="fc-chk" data-id="' + esc(r.id) + '"' +
+          (state.fcSel[r.id] ? " checked" : "") + '></td>' +
         '<td class="pname"><a href="' + esc(r.url) + '" target="_blank" rel="noopener">' +
           esc(r.name) + '</a></td>' +
         '<td class="num">' + r.daily.toFixed(1) + '</td>' +
         '<td class="num">' + r.need.toFixed(0) + '</td>' +
         '<td class="num up"><b>' + r.qty + '</b></td>' +
+        '<td class="num">' + fmt(r.stock) + '</td>' +
         '<td class="num">' + dl + '</td>' +
+        '<td class="num">' + costCell + '</td>' +
         '<td class="num">NT$' + fmt(Math.round(r.amount)) + '</td>' +
+        '<td class="num ' + mCls + '">' + mCell + '</td>' +
         '<td>' + (risk ? '<span class="warn-tag">可能断货</span>'
                        : '<span class="ok-tag">安全</span>') + '</td>' +
         '</tr>';
@@ -553,7 +871,135 @@
         '仅显示前 ' + show.length + ' 件（共 ' + rows.length + ' 件）</div>';
     }
     $("fcBox").innerHTML = html;
+    bindFCChk();
+    updatePOCount();
     toast("已计算 " + rows.length + " 件商品的补货建议");
+  }
+
+  /* ---------------- 采购单 ---------------- */
+
+  function bindFCChk() {
+    Array.prototype.forEach.call(document.querySelectorAll(".fc-chk"), function (c) {
+      c.addEventListener("change", function () {
+        var id = c.getAttribute("data-id");
+        if (c.checked) state.fcSel[id] = true; else delete state.fcSel[id];
+        updatePOCount();
+        syncHeadChk();
+      });
+    });
+    syncHeadChk();
+  }
+
+  function syncHeadChk() {
+    var head = $("fcHeadChk");
+    if (!head) return;
+    var all = document.querySelectorAll(".fc-chk");
+    var on = document.querySelectorAll(".fc-chk:checked");
+    head.checked = all.length > 0 && on.length === all.length;
+    head.indeterminate = on.length > 0 && on.length < all.length;
+  }
+
+  function updatePOCount() {
+    var el = $("poSelCnt");
+    if (!el) return;
+    var n = Object.keys(state.fcSel).length;
+    el.textContent = n ? "(" + n + ")" : "";
+  }
+
+  function exportPO() {
+    var picked = state.fcRows.filter(function (r) { return state.fcSel[r.id]; });
+    if (!picked.length) { toast("请先勾选要采购的商品"); return; }
+    var lead = parseInt($("leadTime").value, 10) || 14;
+    var rows = [
+      ["采购单（自动生成）", "", "", "", "", "", "", ""],
+      ["生成时间", new Date().toLocaleString("zh-TW"), "", "", "", "", "", ""],
+      ["备货周期(天)", lead, "", "", "", "", "", ""],
+      ["", "", "", "", "", "", "", ""],
+      ["序号", "商品ID", "商品名称", "店铺", "采购数量", "进货单价(NT$)", "采购金额(NT$)", "备注"]
+    ];
+    var totalQty = 0, totalAmt = 0;
+    picked.forEach(function (r, i) {
+      totalQty += r.qty;
+      totalAmt += r.amount;
+      rows.push([
+        i + 1, r.id, r.name, r.shop || "",
+        r.qty, r.unitCost.toFixed(2), r.amount.toFixed(2),
+        r.costMissing ? "⚠ 单价为售价估算" : ""
+      ]);
+    });
+    rows.push(["", "", "", "合计", totalQty, "", totalAmt.toFixed(2), ""]);
+    downloadCSV("采购单-" + stamp() + ".csv", rows);
+    toast("已导出采购单（" + picked.length + " 项）");
+  }
+
+  function exportInv() {
+    var list = invFiltered();
+    if (!list.length) { toast("没有可导出的商品"); return; }
+    var rows = [["商品ID", "商品名称", "店铺", "售价(NT$)", "现有库存", "进货成本(NT$)",
+                 "单件毛利(NT$)", "毛利率", "商品链接"]];
+    list.forEach(function (r) {
+      var iv = invOf(r.id);
+      var price = r.price || 0;
+      var margin = (price > 0 && iv.cost > 0) ? (price - iv.cost) : null;
+      rows.push([
+        r.id, r.name, r.shop || "", price,
+        iv.hasStock ? iv.stock : "", iv.hasCost ? iv.cost : "",
+        margin === null ? "" : (Math.round(margin * 100) / 100),
+        (margin !== null && price > 0) ? (margin / price * 100).toFixed(2) + "%" : "",
+        r.url
+      ]);
+    });
+    downloadCSV("库存成本表-" + stamp() + ".csv", rows);
+    toast("已导出库存表（" + list.length + " 件）");
+  }
+
+  /* ---------------- 库存表交互 ---------------- */
+
+  function onInvInput(e) {
+    var inp = e.target;
+    if (!inp || !inp.classList || !inp.classList.contains("inv-input")) return;
+    var id = inp.getAttribute("data-id");
+    var field = inp.getAttribute("data-field");
+    setInvField(id, field, inp.value);
+    saveInv();
+    var v = inp.value === "" ? 0 : Number(inp.value);
+    inp.classList.toggle("inv-filled", !isNaN(v) && v > 0);
+
+    // 就地刷新本行毛利，避免整表重绘导致输入框失焦
+    var tr = inp.parentNode;
+    while (tr && tr.tagName !== "TR") tr = tr.parentNode;
+    if (!tr) return;
+    var price = Number(tr.getAttribute("data-price")) || 0;
+    var costInp = tr.querySelector('[data-field="cost"]');
+    var cost = costInp && costInp.value !== "" ? Number(costInp.value) : 0;
+    if (isNaN(cost)) cost = 0;
+    var margin = (price > 0 && cost > 0) ? (price - cost) : null;
+    var cls = margin === null ? "flat" : (margin >= 0 ? "margin-pos" : "margin-neg");
+    var mc = tr.querySelector(".margin-cell");
+    var pc = tr.querySelector(".marginpct-cell");
+    if (mc) {
+      mc.className = "num margin-cell " + cls;
+      mc.textContent = margin === null ? "—" : ("NT$" + fmt(Math.round(margin * 100) / 100));
+    }
+    if (pc) {
+      pc.className = "num marginpct-cell " + cls;
+      pc.textContent = (margin === null || price <= 0)
+        ? "—" : ((margin / price * 100).toFixed(1) + "%");
+    }
+  }
+
+  function onPagerClick(e) {
+    var b = e.target;
+    while (b && b.tagName !== "BUTTON") b = b.parentNode;
+    if (!b || !b.getAttribute) return;
+    var p = b.getAttribute("data-p");
+    if (p === null) return;
+    if (p === "prev") state.invPage -= 1;
+    else if (p === "next") state.invPage += 1;
+    else state.invPage = parseInt(p, 10) || 0;
+    renderInv();
+    var box = $("invBox");
+    if (box && box.scrollIntoView) box.scrollIntoView({ block: "nearest" });
   }
 
   /* ---------------- 事件绑定 ---------------- */
@@ -569,6 +1015,7 @@
         var t = b.getAttribute("data-tab");
         $("tab-track").classList.toggle("hidden", t !== "track");
         $("tab-forecast").classList.toggle("hidden", t !== "forecast");
+        if (t === "forecast") renderInv();
       });
     });
 
@@ -595,15 +1042,65 @@
 
     $("baseSel").addEventListener("change", renderAll);
     $("btnCalc").addEventListener("click", calcForecast);
+
+    // ---- 库存与成本 ----
+    var searchTimer = null;
+    $("invSearch").addEventListener("input", function (e) {
+      clearTimeout(searchTimer);
+      var v = e.target.value;
+      searchTimer = setTimeout(function () {
+        state.invQuery = v;
+        state.invPage = 0;
+        renderInv();
+      }, 180);
+    });
+    $("invPageSize").addEventListener("change", function () {
+      state.invPage = 0;
+      renderInv();
+    });
+    $("invFilter").addEventListener("change", function () {
+      state.invPage = 0;
+      renderInv();
+    });
+    $("invBox").addEventListener("input", onInvInput);
+    $("invPager").addEventListener("click", onPagerClick);
+    $("btnInvExport").addEventListener("click", exportInv);
+
+    // ---- 采购单 ----
+    $("btnCheckAll").addEventListener("click", function () {
+      state.fcRows.forEach(function (r) { state.fcSel[r.id] = true; });
+      calcForecast();
+    });
+    $("btnUncheckAll").addEventListener("click", function () {
+      state.fcSel = {};
+      calcForecast();
+    });
+    $("btnPoExport").addEventListener("click", exportPO);
+
+    // 表头全选
+    document.addEventListener("change", function (e) {
+      if (e.target && e.target.id === "fcHeadChk") {
+        var on = e.target.checked;
+        Array.prototype.forEach.call(document.querySelectorAll(".fc-chk"), function (c) {
+          c.checked = on;
+          var id = c.getAttribute("data-id");
+          if (on) state.fcSel[id] = true; else delete state.fcSel[id];
+        });
+        updatePOCount();
+      }
+    });
   }
 
   function afterLoad(err, items, srcUrl) {
     if (err) {
       $("snapMsg").innerHTML = "⚠️ 商品数据加载失败：" + esc(err.message) +
         "<br><span style='font-size:12px'>请检查 data/source.json 的 catalog_url，或稍后重试。</span>";
+      var box = $("invBox");
+      if (box) box.innerHTML = '<div class="empty-hint"><div class="ico">⚠️</div>' +
+        '商品数据加载失败，库存表暂不可用</div>';
       return;
     }
-    state.items = items || [];
+    state.items = normCatalog({ items: items || [] });
     state.loaded = true;
     state.snaps = loadSnaps();
     state.srcUrl = srcUrl || "";
@@ -616,6 +1113,7 @@
   /* ---------------- 启动 ---------------- */
 
   state.snaps = loadSnaps();
+  state.inv = loadInv();
   bind();
   renderAll();
   loadSource(afterLoad);

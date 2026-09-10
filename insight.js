@@ -66,6 +66,44 @@
 
   function shopOf(it) { return it.shop || it.shop_name || "—"; }
 
+  /* ---------------- 字段归一化 ----------------
+   * 线上 catalog 的 item 只有 shopid / itemid，**没有 id 和 url**。
+   * 不归一化会让全部商品塌缩成 id "undefined"。口径与主站 app.js 保持一致。 */
+  function normPrice(v) {
+    var n = Number(v) || 0;
+    for (var i = 0; i < 2 && n > 1000000; i++) n = n / 100000;
+    return n;
+  }
+
+  function normCatalog(doc) {
+    var items = (doc && doc.items) || (Array.isArray(doc) ? doc : []);
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (!it || typeof it !== "object" || it._n) continue;
+      var sid = it.shopid, iid = it.itemid;
+      if (!it.id && sid != null && iid != null) it.id = String(sid) + "_" + String(iid);
+      if (!it.url && sid != null && iid != null) {
+        it.url = "https://shopee.tw/product/" + sid + "/" + iid;
+      }
+      var ms = Number(it.month_sold) || 0;
+      var ts = Number(it.sold_total != null ? it.sold_total : it.total_sold) || 0;
+      it.month_sold = ms;
+      it.monthly_sold = ms;
+      it.sold_total = ts;
+      it.total_sold = ts;
+      if (it.sold == null) it.sold = ms;
+      if (it.week_sold == null) it.week_sold = ms > 0 ? Math.round(ms / 4.345) : 0;
+      if (it.name == null) it.name = "";
+      it.price = normPrice(it.price);
+      if (it.shop == null) it.shop = it.shop_name || "";
+      if (it.shop_name == null) it.shop_name = it.shop;
+      if (it.rating == null) it.rating = 0;
+      if (it.reviews == null) it.reviews = 0;
+      it._n = 1;
+    }
+    return items;
+  }
+
   /* ---------------- 数据加载（多源回退） ---------------- */
 
   function tryFetch(url, ms) {
@@ -108,7 +146,7 @@
           var u = urls[i++];
           tryFetch(u, 9000)
             .then(function (d) {
-              var items = d.items || (Array.isArray(d) ? d : []);
+              var items = normCatalog(d);
               if (!items.length) throw new Error("数据为空");
               cb(null, items, u);
             })
@@ -795,7 +833,7 @@
         '商品数据加载失败：' + esc(err.message) + '</div>';
       return;
     }
-    state.items = items || [];
+    state.items = normCatalog({ items: items || [] });
     state.snaps = loadSnaps();
 
     // 自动补记今日价格（每天首次打开即积累，无需手工操作）

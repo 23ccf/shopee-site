@@ -60,6 +60,24 @@ tbody tr:hover{background:#fafbfd}
 
 .empty-hint{text-align:center;padding:40px 20px;color:var(--muted)}
 .empty-hint .ico{font-size:42px;margin-bottom:10px}
+
+/* 顶栏下拉/按钮尺寸对齐 */
+.top-actions .topnav{align-self:center}
+
+/* 库存与成本：行内编辑输入框 */
+.inv-input{width:88px;border:1px solid var(--line);border-radius:6px;padding:5px 8px;
+  font-size:13px;font-family:inherit;text-align:right;font-variant-numeric:tabular-nums}
+.inv-input:focus{outline:none;border-color:var(--brand);background:#fffdf7}
+.inv-input::placeholder{color:#c3ccd8}
+.inv-filled{border-color:#bfe3c9;background:#f4fbf6}
+.margin-pos{color:var(--brand);font-weight:600}
+.margin-neg{color:var(--good);font-weight:600}
+.pager{display:flex;gap:6px;align-items:center;justify-content:center;margin-top:12px;flex-wrap:wrap}
+.pager button{border:1px solid var(--line);background:var(--card);border-radius:7px;
+  padding:5px 11px;font-size:12px;cursor:pointer;font-family:inherit;color:var(--ink)}
+.pager button:hover:not(:disabled){border-color:var(--brand);color:var(--brand)}
+.pager button:disabled{opacity:.4;cursor:default}
+.pager button.on{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:600}
 </style>
 </head>
 <body>
@@ -73,7 +91,9 @@ tbody tr:hover{background:#fafbfd}
     </div>
   </div>
   <div class="top-actions">
-    <a href="index.html" style="color:#fff;text-decoration:none;font-size:13px;opacity:.95">← 返回选品库</a>
+    <a href="index.html" class="topnav">📦 选品库</a>
+    <a href="sales.html" class="topnav on">📈 销售追踪</a>
+    <a href="insight.html" class="topnav">🧭 选品洞察</a>
   </div>
 </div>
 
@@ -133,25 +153,61 @@ tbody tr:hover{background:#fafbfd}
           <input type="number" id="safetyDays" value="7" min="0" max="60">
         </div>
         <div class="ctrl">
-          <label>现有库存（件）</label>
-          <input type="number" id="stockNow" value="0" min="0">
-        </div>
-        <div class="ctrl">
           <label>只显示建议补货 &gt;</label>
           <input type="number" id="minQty" value="1" min="0">
         </div>
         <button class="btn btn-primary" id="btnCalc">计算补货建议</button>
       </div>
       <div class="formula">
-        <b>公式：</b>建议补货量 = 日均销量 × (备货周期 + 安全库存天数) − 现有库存<br>
-        <b>日均销量</b>取自快照的历史增量平均（不足两天则用月销 ÷ 30 推算）。
+        <b>公式：</b>建议补货量 = 日均销量 × (备货周期 + 安全库存天数) − <b>该商品现有库存</b><br>
+        <b>日均销量</b>取自快照的历史增量平均（不足两天则用月销 ÷ 30 推算）。<br>
+        <b>采购额</b>= 建议补货量 × <b>进货成本</b>（在下方「库存与成本」里填，未填则按售价估算并标注）。
       </div>
+    </div>
+
+    <div class="panel">
+      <h3>📦 库存与成本 <span class="cnt" id="invCount"></span></h3>
+      <div class="ctrl-row">
+        <div class="ctrl" style="flex:1;min-width:220px">
+          <label>搜索商品（过滤下方列表）</label>
+          <input type="text" id="invSearch" placeholder="输入商品名 / 店铺关键词…" autocomplete="off">
+        </div>
+        <div class="ctrl">
+          <label>每页显示</label>
+          <select id="invPageSize">
+            <option value="20">20 条</option>
+            <option value="50" selected>50 条</option>
+            <option value="100">100 条</option>
+            <option value="9999">全部</option>
+          </select>
+        </div>
+        <div class="ctrl">
+          <label>只看已填库存</label>
+          <select id="invFilter">
+            <option value="all" selected>全部商品</option>
+            <option value="filled">已填库存/成本</option>
+            <option value="empty">未填写的</option>
+          </select>
+        </div>
+        <button class="btn btn-ghost" id="btnInvExport">⬇ 导出库存表 CSV</button>
+      </div>
+      <div class="formula">
+        <b>为什么必须填这里：</b>采购预测要靠「每件商品还剩多少库存」决定要不要补货，靠「每件进货成本」算出要花多少钱、卖出去能赚多少。<br>
+        <b>库存</b>填当前还剩的件数（没有就填 0）；<b>成本</b>填从供应商拿货的单件价（NT$）。改完自动保存，只存在你本机浏览器，不会上传。
+      </div>
+      <div id="invBox"><div class="empty-hint"><div class="ico">📦</div>正在加载商品…</div></div>
+      <div class="pager" id="invPager"></div>
     </div>
 
     <div class="stats" id="fcStatBox"></div>
 
     <div class="panel">
       <h3>📦 补货建议清单 <span class="cnt" id="fcCount"></span></h3>
+      <div class="ctrl-row">
+        <button class="btn btn-ghost" id="btnCheckAll">☑ 全选</button>
+        <button class="btn btn-ghost" id="btnUncheckAll">☐ 全不选</button>
+        <button class="btn btn-primary" id="btnPoExport">⬇ 导出采购单 CSV <span id="poSelCnt"></span></button>
+      </div>
       <div id="fcBox"><div class="empty-hint"><div class="ico">🧮</div>点上方「计算补货建议」开始</div></div>
     </div>
   </div>
@@ -160,6 +216,6 @@ tbody tr:hover{background:#fafbfd}
 
 <div class="toast" id="toast"></div>
 
-<script src="sales.js"></script>
+<script src="sales.js?v=20260910a"></script>
 </body>
 </html>

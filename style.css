@@ -29,6 +29,14 @@ body{margin:0;background:var(--bg);color:var(--ink);
 .badge.sync-off{background:rgba(255,255,255,.22);opacity:.7}
 .date{font-size:13px;opacity:.95}
 
+/* 三页互通导航（选品库 / 销售追踪 / 选品洞察） */
+.topnav{color:#fff;text-decoration:none;font-size:13px;opacity:.95;padding:6px 12px;
+  border-radius:8px;background:rgba(255,255,255,.14);transition:.15s;white-space:nowrap;
+  display:inline-flex;align-items:center;line-height:1.2}
+.topnav:hover{background:rgba(255,255,255,.26);opacity:1}
+.topnav.on{background:rgba(255,255,255,.32);font-weight:600;opacity:1}
+
+
 /* Toast 通知 */
 .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);
   background:rgba(46,158,79,.95);color:#fff;padding:12px 24px;border-radius:24px;
