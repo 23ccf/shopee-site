@@ -15,7 +15,10 @@
   var LS_KEY = "shopee_track_v1";
   var INV_KEY = "shopee_inv_v1";   // 库存与成本：{ "<id>": {stock, cost} }
   var PO_KEY = "shopee_po_v1";     // 采购单默认参数（备货周期/安全天数等）
+  var PREFS_KEY = "shopee_prefs_v1";   // 偏好设置：{ autoSnap: true }
+  var PO_LOG_KEY = "shopee_po_log_v1"; // 采购入库历史：[{ ts, at, count, qty, amount, items }]
   var MAX_DAYS = 90;          // 最多保留 90 天快照
+  var MAX_PO_LOG = 50;        // 入库历史最多保留 50 条
   var WARN_DAYS = 3;          // 连续 N 天零增长 → 滞销预警
 
   var state = {
@@ -27,7 +30,9 @@
     invPage: 0,      // 库存表当前页
     invQuery: "",    // 库存表搜索词
     fcRows: [],      // 最近一次补货建议
-    fcSel: {}        // 采购单勾选：{ "<id>": true }
+    fcSel: {},       // 采购单勾选：{ "<id>": true }
+    prefs: { autoSnap: true },  // 偏好设置
+    poLog: []        // 采购入库历史
   };
 
   /* ---------------- 工具 ---------------- */
@@ -251,6 +256,45 @@
     if (!e1 && !e2) delete state.inv[id];
   }
 
+  /* ---------------- 偏好设置 ---------------- */
+
+  function loadPrefs() {
+    var def = { autoSnap: true };
+    try {
+      var raw = localStorage.getItem(PREFS_KEY);
+      if (raw) {
+        var o = JSON.parse(raw);
+        if (o && typeof o === "object") {
+          if (typeof o.autoSnap === "boolean") def.autoSnap = o.autoSnap;
+        }
+      }
+    } catch (e) { /* 忽略损坏数据，回落默认值 */ }
+    return def;
+  }
+
+  function savePrefs() {
+    try { localStorage.setItem(PREFS_KEY, JSON.stringify(state.prefs)); }
+    catch (e) { /* 偏好写不进去不影响主流程 */ }
+  }
+
+  /* ---------------- 采购入库历史 ---------------- */
+
+  function loadPoLog() {
+    try {
+      var raw = localStorage.getItem(PO_LOG_KEY);
+      if (raw) {
+        var o = JSON.parse(raw);
+        if (Array.isArray(o)) return o;
+      }
+    } catch (e) { /* 忽略损坏数据 */ }
+    return [];
+  }
+
+  function savePoLog() {
+    try { localStorage.setItem(PO_LOG_KEY, JSON.stringify(state.poLog)); return true; }
+    catch (e) { toast("入库历史保存失败（存储空间不足）"); return false; }
+  }
+
   /* ---------------- CSV 导出 ---------------- */
 
   function csvCell(v) {
@@ -282,8 +326,9 @@
       String(d.getHours()).padStart(2, "0") + String(d.getMinutes()).padStart(2, "0");
   }
 
-  function takeSnapshot() {
-    if (!state.items.length) { toast("还没有商品数据"); return; }
+  function takeSnapshot(opts) {
+    var silent = !!(opts && opts.silent);
+    if (!state.items.length) { if (!silent) toast("还没有商品数据"); return false; }
 
     var s = state.snaps || loadSnaps();
     var tk = todayKey();
@@ -334,8 +379,23 @@
 
     state.snaps = s;
     saveSnaps(s);
-    toast("已记录今日快照（" + state.items.length + " 件商品）");
+    if (silent) {
+      // 提示文案统一交给 renderSnapInfo() 渲染，避免被 renderAll 覆盖
+      state.autoRecOn = todayKey();
+    } else {
+      toast("已记录今日快照（" + state.items.length + " 件商品）");
+    }
     renderAll();
+    return true;
+  }
+
+  // 每天首次打开页面时自动记一次；同一天重复打开不重复写、不覆盖已有数据
+  function autoSnapshot() {
+    if (!state.prefs.autoSnap) return false;
+    if (!state.items.length) return false;
+    var s = state.snaps || loadSnaps();
+    if (s.dates.indexOf(todayKey()) >= 0) return false;   // 今天已记过 → 幂等跳过
+    return takeSnapshot({ silent: true });
   }
 
   /* ---------------- 计算 ---------------- */
@@ -440,11 +500,14 @@
             "　最早：" + s.dates[0];
       if (s.dates.indexOf(todayKey()) >= 0) {
         msg += "　✅ 今天已记录";
+        if (state.autoRecOn === todayKey()) msg += "（本页自动记录）";
       } else {
         msg += "　⏳ 今天还没记录";
+        if (state.prefs.autoSnap) msg += "，下次打开本页会自动记";
       }
     } else {
       msg = "点「记录今日快照」开始积累数据。建议每天固定时间记一次。";
+      if (state.prefs.autoSnap) msg += "（已开启自动记录，下次打开即会自动记一次）";
     }
     $("snapMsg").textContent = msg;
 
@@ -953,6 +1016,198 @@
     toast("已导出库存表（" + list.length + " 件）");
   }
 
+  /* ---------------- 采购到货入库（回写库存） ---------------- */
+
+  function receivePO() {
+    var picked = state.fcRows.filter(function (r) { return state.fcSel[r.id]; });
+    if (!picked.length) { toast("请先勾选要入库的商品"); return; }
+
+    var totalQty = 0, totalAmt = 0, costWritten = 0;
+    picked.forEach(function (r) { totalQty += r.qty; totalAmt += r.amount; });
+
+    if (!confirm("确认这批采购已到货入库？\n\n" +
+        "商品：" + picked.length + " 项\n" +
+        "数量：" + totalQty + " 件\n" +
+        "金额：NT$" + fmt(Math.round(totalAmt)) + "\n\n" +
+        "入库后，这些数量会累加到各自的「现有库存」，补货建议会随之重算。")) return;
+
+    picked.forEach(function (r) {
+      var id = String(r.id);
+      var iv = invOf(id);
+      if (!state.inv[id]) state.inv[id] = {};
+      state.inv[id].stock = (iv.stock || 0) + r.qty;
+      // 只有拿到「真实成本」且用户还没填过成本时，才顺带把成本写进去
+      // （按售价估算的 unitCost 是假的，不能污染成本字段）
+      if (!iv.hasCost && !r.costMissing && r.unitCost > 0) {
+        state.inv[id].cost = Math.round(r.unitCost * 100) / 100;
+        costWritten++;
+      }
+    });
+    saveInv();
+
+    state.poLog.unshift({
+      ts: Date.now(),
+      at: new Date().toLocaleString("zh-TW"),
+      count: picked.length,
+      qty: totalQty,
+      amount: Math.round(totalAmt * 100) / 100,
+      items: picked.map(function (r) {
+        return { id: r.id, name: r.name, qty: r.qty, cost: r.unitCost, missing: r.costMissing };
+      })
+    });
+    if (state.poLog.length > MAX_PO_LOG) state.poLog = state.poLog.slice(0, MAX_PO_LOG);
+    savePoLog();
+
+    state.fcSel = {};     // 清空勾选，防止同一批货被回写两次
+    calcForecast();       // 库存变了 → 重算补货建议
+    renderPoLog();
+    toast("已入库 " + picked.length + " 项 / " + totalQty + " 件" +
+      (costWritten ? "，并写入 " + costWritten + " 条成本" : ""));
+  }
+
+  function renderPoLog() {
+    var box = $("poLogBox");
+    var cnt = $("poLogCnt");
+    if (!box) return;
+    var list = state.poLog;
+    if (cnt) cnt.textContent = list.length ? "最近 " + list.length + " 批" : "";
+    if (!list.length) {
+      box.innerHTML = '<div class="empty-hint"><div class="ico">📥</div>' +
+        '还没有入库记录。勾选补货清单里的商品，点「到货入库」即可。</div>';
+      return;
+    }
+    var html = '<table><thead><tr>' +
+      '<th>入库时间</th><th class="num">项数</th><th class="num">数量</th>' +
+      '<th class="num">金额</th><th>包含商品</th></tr></thead><tbody>';
+    list.forEach(function (g) {
+      var names = g.items.slice(0, 3).map(function (x) { return x.name; }).join("、");
+      if (g.items.length > 3) names += " 等 " + g.items.length + " 项";
+      html += '<tr>' +
+        '<td>' + esc(g.at) + '</td>' +
+        '<td class="num">' + g.count + '</td>' +
+        '<td class="num up">' + fmt(g.qty) + '</td>' +
+        '<td class="num">NT$' + fmt(Math.round(g.amount)) + '</td>' +
+        '<td class="pname" title="' + esc(names) + '">' + esc(names) + '</td>' +
+        '</tr>';
+    });
+    html += '</tbody></table>';
+    box.innerHTML = html;
+  }
+
+  /* ---------------- 本机数据备份 / 还原 ---------------- */
+
+  function backupMsg(html) {
+    var el = $("backupMsg");
+    if (el) el.innerHTML = html;
+  }
+
+  function exportBackup() {
+    var s = state.snaps || loadSnaps();
+    var data = {
+      app: "shopee-erp",
+      kind: "backup",
+      schema: 1,
+      exportedAt: new Date().toISOString(),
+      counts: {
+        snapDates: s.dates.length,
+        items: Object.keys(s.items).length,
+        inv: Object.keys(state.inv).length,
+        poLog: state.poLog.length
+      },
+      track: s,
+      inv: state.inv,
+      prefs: state.prefs,
+      poLog: state.poLog
+    };
+    var blob = new Blob([JSON.stringify(data, null, 2)],
+      { type: "application/json;charset=utf-8" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "虾皮ERP备份-" + stamp() + ".json";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+
+    backupMsg("✅ 已导出：" + s.dates.length + " 天快照 / " +
+      Object.keys(s.items).length + " 件商品 / " +
+      Object.keys(state.inv).length + " 条库存成本");
+    toast("备份已导出");
+  }
+
+  function importBackup(file) {
+    if (!file) return;
+    var fr = new FileReader();
+    fr.onload = function () {
+      var d;
+      try { d = JSON.parse(String(fr.result)); }
+      catch (e) {
+        backupMsg("❌ 不是有效的 JSON 文件，请确认选的是本页导出的备份");
+        toast("还原失败：文件格式错误");
+        return;
+      }
+      if (!d || d.app !== "shopee-erp" || !d.track || !d.track.dates ||
+          !d.track.items || !d.track.meta) {
+        backupMsg("❌ 这不是本 ERP 的备份文件（缺少标识字段）");
+        toast("还原失败：文件不匹配");
+        return;
+      }
+
+      var dates = d.track.dates.length;
+      var invN = d.inv ? Object.keys(d.inv).length : 0;
+      var logN = Array.isArray(d.poLog) ? d.poLog.length : 0;
+      if (!confirm("即将从备份还原：\n\n" +
+          "快照：" + dates + " 天\n" +
+          "库存成本：" + invN + " 条\n" +
+          "入库记录：" + logN + " 批\n" +
+          (d.exportedAt ? "\n备份时间：" + new Date(d.exportedAt).toLocaleString("zh-TW") : "") +
+          "\n\n⚠️ 会覆盖当前本机的快照与库存数据，且不可撤销。")) return;
+
+      try {
+        localStorage.setItem(LS_KEY, JSON.stringify(d.track));
+        localStorage.setItem(INV_KEY, JSON.stringify(d.inv || {}));
+        localStorage.setItem(PO_LOG_KEY, JSON.stringify(Array.isArray(d.poLog) ? d.poLog : []));
+        if (d.prefs && typeof d.prefs === "object") {
+          localStorage.setItem(PREFS_KEY, JSON.stringify(d.prefs));
+        }
+      } catch (e) {
+        backupMsg("❌ 写入失败：浏览器存储空间不足，原有数据未改动");
+        toast("还原失败");
+        return;
+      }
+
+      // 就地重载内存态并重绘，避免整页刷新再拉一次 catalog
+      state.snaps = loadSnaps();
+      state.inv = loadInv();
+      state.prefs = loadPrefs();
+      state.poLog = loadPoLog();
+      state.invPage = 0;
+      state.invQuery = "";
+      state.fcSel = {};
+      var se = $("invSearch"); if (se) se.value = "";
+      var ac = $("autoSnap"); if (ac) ac.checked = !!state.prefs.autoSnap;
+
+      renderAll();
+      renderInv();
+      renderPoLog();
+      var fc = $("fcBox");
+      if (fc) fc.innerHTML = '<div class="empty-hint"><div class="ico">🧮</div>' +
+        '数据已更新，请重新点「计算补货建议」</div>';
+      $("fcStatBox").innerHTML = "";
+      $("fcCount").textContent = "";
+
+      backupMsg("✅ 已还原：" + dates + " 天快照 / " + invN + " 条库存成本" +
+        (logN ? " / " + logN + " 批入库记录" : ""));
+      toast("备份已还原");
+    };
+    fr.onerror = function () {
+      backupMsg("❌ 读取文件失败，请重试");
+      toast("还原失败：无法读取文件");
+    };
+    fr.readAsText(file);
+  }
+
   /* ---------------- 库存表交互 ---------------- */
 
   function onInvInput(e) {
@@ -1076,6 +1331,23 @@
       calcForecast();
     });
     $("btnPoExport").addEventListener("click", exportPO);
+    $("btnPoReceive").addEventListener("click", receivePO);
+
+    // ---- 偏好：自动记录 ----
+    $("autoSnap").addEventListener("change", function (e) {
+      state.prefs.autoSnap = !!e.target.checked;
+      savePrefs();
+      toast(state.prefs.autoSnap ? "已开启：每天首次打开自动记录" : "已关闭自动记录");
+    });
+
+    // ---- 备份 / 还原 ----
+    $("btnBackup").addEventListener("click", exportBackup);
+    $("btnRestore").addEventListener("click", function () { $("restoreFile").click(); });
+    $("restoreFile").addEventListener("change", function (e) {
+      var f = e.target.files && e.target.files[0];
+      importBackup(f);
+      e.target.value = "";   // 允许重复选同一个文件
+    });
 
     // 表头全选
     document.addEventListener("change", function (e) {
@@ -1108,13 +1380,19 @@
     $("snapMsg").textContent = "已加载 " + state.items.length + " 件商品" +
       (host ? "（数据源：" + host + "）" : "");
     renderAll();
+    autoSnapshot();     // 每天首次打开自动补一次快照（已在今天记过则跳过）
   }
 
   /* ---------------- 启动 ---------------- */
 
   state.snaps = loadSnaps();
   state.inv = loadInv();
+  state.prefs = loadPrefs();
+  state.poLog = loadPoLog();
   bind();
+  var ac0 = $("autoSnap");
+  if (ac0) ac0.checked = !!state.prefs.autoSnap;
   renderAll();
+  renderPoLog();
   loadSource(afterLoad);
 })();

@@ -78,6 +78,13 @@ tbody tr:hover{background:#fafbfd}
 .pager button:hover:not(:disabled){border-color:var(--brand);color:var(--brand)}
 .pager button:disabled{opacity:.4;cursor:default}
 .pager button.on{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:600}
+
+/* 开关（自动记录） */
+.sw{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ink);
+  cursor:pointer;user-select:none;padding:7px 12px;border:1px solid var(--line);
+  border-radius:8px;background:var(--card);white-space:nowrap}
+.sw:hover{border-color:var(--brand)}
+.sw input{accent-color:var(--brand);cursor:pointer;margin:0}
 </style>
 </head>
 <body>
@@ -113,13 +120,17 @@ tbody tr:hover{background:#fafbfd}
         <button class="btn btn-ghost" id="btnReload">刷新数据</button>
         <button class="btn btn-danger" id="btnClear">清空快照</button>
         <div style="flex:1"></div>
+        <label class="sw" title="打开本页时，若今天还没有快照就自动记一次">
+          <input type="checkbox" id="autoSnap" checked> 每天首次打开自动记录
+        </label>
         <div class="ctrl">
           <label>对比基准</label>
           <select id="baseSel"><option value="1">对比昨天</option></select>
         </div>
       </div>
       <div class="formula">
-        <b>怎么用：</b>每天打开本页点一次「记录今日快照」，系统会记下每件商品的累计销量。
+        <b>怎么用：</b>打开本页时会<b>自动记一次今日快照</b>（当天只记一次，不会覆盖已有数据）；
+        也可以随时点「记录今日快照」手动补记或刷新当天数据。
         有了两天以上的记录，就能算出<b>每日真实增量</b>，看出哪些商品在起量、哪些已经停滞。
         数据存在你本机浏览器（localStorage），不会上传。
       </div>
@@ -136,6 +147,22 @@ tbody tr:hover{background:#fafbfd}
     <div class="panel">
       <h3>⚠️ 滞销预警 <span class="cnt">连续多日零增长</span></h3>
       <div id="warnBox"><div class="empty-hint"><div class="ico">✅</div>暂无预警</div></div>
+    </div>
+
+    <div class="panel">
+      <h3>💾 本机数据备份</h3>
+      <div class="ctrl-row">
+        <button class="btn btn-ghost" id="btnBackup">⬇ 导出备份（JSON）</button>
+        <button class="btn btn-ghost" id="btnRestore">⬆ 从备份还原</button>
+        <input type="file" id="restoreFile" accept=".json,application/json" class="hidden">
+      </div>
+      <div class="formula">
+        <b>为什么要备份：</b>快照和库存都保存在本机浏览器里（localStorage）。
+        浏览器清理缓存、换电脑、换浏览器，数据都会没；且快照最多只保留 90 天。<br>
+        <b>建议每月导一次</b>存档。导出的 JSON 含：全部快照 + 库存成本 + 入库记录 + 设置。<br>
+        <b>还原</b>会覆盖当前本机数据，会先校验文件格式并二次确认，选错文件不会破坏现有内容。
+      </div>
+      <div id="backupMsg" style="font-size:13px;color:var(--muted)"></div>
     </div>
   </div>
 
@@ -207,8 +234,19 @@ tbody tr:hover{background:#fafbfd}
         <button class="btn btn-ghost" id="btnCheckAll">☑ 全选</button>
         <button class="btn btn-ghost" id="btnUncheckAll">☐ 全不选</button>
         <button class="btn btn-primary" id="btnPoExport">⬇ 导出采购单 CSV <span id="poSelCnt"></span></button>
+        <button class="btn btn-ghost" id="btnPoReceive">📥 到货入库（回写库存）</button>
+      </div>
+      <div class="formula">
+        <b>下单：</b>勾选商品 → 「导出采购单 CSV」发给供应商。<br>
+        <b>收货：</b>货到了就再勾一次 → 「到货入库」，采购数量会累加到「现有库存」，
+        补货建议随即重算。入库后勾选会自动清空，同一批货不会被记两次。
       </div>
       <div id="fcBox"><div class="empty-hint"><div class="ico">🧮</div>点上方「计算补货建议」开始</div></div>
+    </div>
+
+    <div class="panel">
+      <h3>📥 入库记录 <span class="cnt" id="poLogCnt"></span></h3>
+      <div id="poLogBox"><div class="empty-hint"><div class="ico">📥</div>还没有入库记录</div></div>
     </div>
   </div>
 
@@ -216,6 +254,6 @@ tbody tr:hover{background:#fafbfd}
 
 <div class="toast" id="toast"></div>
 
-<script src="sales.js?v=20260910a"></script>
+<script src="sales.js?v=20260910b"></script>
 </body>
 </html>
