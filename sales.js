@@ -72,19 +72,63 @@
 
   /* ---------------- 数据加载 ---------------- */
 
+  // 单个 URL 尝试拉取（带超时）
+  function tryFetch(url, ms) {
+    return new Promise(function (resolve, reject) {
+      var timer = setTimeout(function () { reject(new Error("超时")); }, ms || 8000);
+      fetch(url, { cache: "no-store" })
+        .then(function (r) {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        })
+        .then(function (d) { clearTimeout(timer); resolve(d); })
+        .catch(function (e) { clearTimeout(timer); reject(e); });
+    });
+  }
+
+  // 从 GitHub 仓库地址推导 jsDelivr CDN 地址（大陆可直连）
+  function toJsDelivr(url) {
+    var m = /raw\.githubusercontent\.com\/([^/]+)\/([^/]+)\/([^/]+)\/(.+)/.exec(url || "");
+    if (!m) return null;
+    return "https://cdn.jsdelivr.net/gh/" + m[1] + "/" + m[2] + "@" + m[3] + "/" + m[4];
+  }
+
+  // 依次尝试多个数据源，任一成功即可
   function loadSource(cb) {
     fetch("data/source.json", { cache: "no-store" })
       .then(function (r) { return r.json(); })
       .then(function (cfg) {
-        var url = cfg.catalog_url;
-        if (!url) { cb(new Error("source.json 缺少 catalog_url")); return; }
-        fetch(url, { cache: "no-store" })
-          .then(function (r) { return r.json(); })
-          .then(function (d) {
-            var items = d.items || (Array.isArray(d) ? d : []);
-            cb(null, items);
-          })
-          .catch(cb);
+        var urls = [];
+        if (cfg.catalog_url) urls.push(cfg.catalog_url);
+        var cdn = toJsDelivr(cfg.catalog_url);
+        if (cdn) urls.push(cdn);
+        if (cfg.gitee && cfg.gitee.owner && cfg.gitee.repo) {
+          var g = cfg.gitee;
+          urls.push("https://gitee.com/" + g.owner + "/" + g.repo +
+                    "/raw/" + (g.branch || "master") + "/" + (g.catalogPath || "catalog.json"));
+        }
+        if (!urls.length) { cb(new Error("source.json 缺少 catalog_url")); return; }
+
+        var i = 0;
+        var errors = [];
+        function next() {
+          if (i >= urls.length) {
+            cb(new Error("全部数据源均失败：" + errors.join(" / ")));
+            return;
+          }
+          var u = urls[i++];
+          tryFetch(u, 9000)
+            .then(function (d) {
+              var items = d.items || (Array.isArray(d) ? d : []);
+              if (!items.length) throw new Error("数据为空");
+              cb(null, items, u);
+            })
+            .catch(function (e) {
+              errors.push(u.replace(/^https:\/\//, "") + " (" + e.message + ")");
+              next();
+            });
+        }
+        next();
       })
       .catch(cb);
   }
@@ -546,15 +590,19 @@
     $("btnCalc").addEventListener("click", calcForecast);
   }
 
-  function afterLoad(err, items) {
+  function afterLoad(err, items, srcUrl) {
     if (err) {
-      $("snapMsg").textContent = "⚠️ 商品数据加载失败：" + err.message;
+      $("snapMsg").innerHTML = "⚠️ 商品数据加载失败：" + esc(err.message) +
+        "<br><span style='font-size:12px'>请检查 data/source.json 的 catalog_url，或稍后重试。</span>";
       return;
     }
     state.items = items || [];
     state.loaded = true;
     state.snaps = loadSnaps();
-    $("snapMsg").textContent = "已加载 " + state.items.length + " 件商品";
+    state.srcUrl = srcUrl || "";
+    var host = (srcUrl || "").replace(/^https:\/\//, "").split("/")[0];
+    $("snapMsg").textContent = "已加载 " + state.items.length + " 件商品" +
+      (host ? "（数据源：" + host + "）" : "");
     renderAll();
   }
 
