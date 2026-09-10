@@ -292,5 +292,5 @@ table.grid{width:100%;border-collapse:collapse;font-size:13px}
 .gh-token-actions{display:flex;gap:10px}
 .gh-token-msg{margin-top:12px;font-size:13px;color:#16a34a;min-height:18px}
 
-
-
+/* 价格区间连接符（多规格商品：NT$100–200） */
+.pr-sep{display:inline-block;margin:0 2px;opacity:.55;font-weight:400}

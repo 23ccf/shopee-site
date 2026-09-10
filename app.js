@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260910c"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260910d"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -150,6 +150,7 @@
       wireRankings();
       wireShops();
       wireFav();
+      wireGate();
     });
     wireCalc();
     wireSync();
@@ -1238,7 +1239,7 @@
         </div>
       </div>
       <div class="p-cards">
-        <div class="p-card"><div class="n">${m(d.price)}${priceSanity(d.price) ? ' <span style="color:#c0392b;font-size:11px;font-weight:600;" title="价格疑似未正确换算，待复核">⚠</span>' : (d.price_repaired ? ' <span style="color:#2e7d32;font-size:11px;font-weight:600;" title="此价格已由系统自动校正">✓</span>' : "")}</div><div class="l">售价</div></div>
+        <div class="p-card"><div class="n">${m(d.price)}${(d.price_max && d.price_max > d.price) ? '<span class="pr-sep">–</span>' + m(d.price_max) : ''}${priceSanity(d.price) ? ' <span style="color:#c0392b;font-size:11px;font-weight:600;" title="价格疑似未正确换算，待复核">⚠</span>' : (d.price_repaired ? ' <span style="color:#2e7d32;font-size:11px;font-weight:600;" title="此价格已由系统自动校正">✓</span>' : "")}</div><div class="l">${(d.price_max && d.price_max > d.price) ? '价格区间' : '售价'}</div></div>
         <div class="p-card"><div class="n">${d.main_sku && d.main_sku.price != null ? m(d.main_sku.price) : "—"}</div><div class="l">主卖SKU价</div></div>
         <div class="p-card"><div class="n">${f(d.total_sold)}</div><div class="l">链接总销量</div></div>
         <div class="p-card"><div class="n">${fmtMonth(d.month_sold)}</div><div class="l">月销量</div></div>
@@ -1349,7 +1350,9 @@
       pageItems.map(libItemId).join(",")].join("|");
     if (sig === _libGridSig && $("#libGrid").children.length) return;
     _libGridSig = sig;
-    $("#libCount").textContent = `${fmt(L.total)} 件商品`;
+    const _hid = state.lib.hiddenByGate || 0;
+    $("#libCount").textContent = `${fmt(L.total)} 件商品` +
+      (_hid ? ` · 已按「月销≥${state.lib.gateUsed}」隐藏 ${fmt(_hid)} 件低动销` : "");
     $("#libHint").textContent = "共 " + fmt(items.length) + " 件录制商品 · 支持搜索/筛选/排序";
     renderLibGrid(pageItems);
     renderLibPager();
@@ -1369,7 +1372,7 @@
     if (L.min_sold) p.set("min_sold", L.min_sold);
     if (L.min_month) p.set("min_month", L.min_month);
     if (L.min_rating) p.set("min_rating", L.min_rating);
-    const cols = ["id", "name", "price", "main_sku", "sold_total", "month_sold", "week_sold",
+    const cols = ["id", "name", "price", "price_max", "main_sku", "sold_total", "month_sold", "week_sold",
       "sold", "rating", "reviews", "liked", "stock", "shop", "loc", "brand", "url", "cats"];
     const build = (items) => {
       const rows = items.map((it) => cols.map((c) => {
@@ -2004,6 +2007,11 @@
       const weighted_avg_price = w_sum > 0 ? Math.round(w_price / w_sum) : avg(prices);
       // 月销>100的商品数
       const hot_count = its.filter((it) => (it.month_sold || 0) >= 100).length;
+      // ★ 月销>30 的商品数（用户要求的店铺排序口径）：该店在本选品库里
+      //   「月销 > 30」的商品条数，用来衡量这家店有多少款值得跟进。
+      const hot30 = its.filter((it) => (it.month_sold || 0) > 30).length;
+      // 店铺总销量 = 该店在录商品的累计销量（sold_total）之和
+      const shop_total_sold = its.reduce((a, b) => a + (b.sold_total || b.total_sold || 0), 0);
       // 涨跌趋势：周销×4.3 vs 月销，估算环比变化
       const est_month_from_wk = Math.round(week_sold * 4.3);
       const trend_pct = est_month_from_wk > 0
@@ -2018,9 +2026,9 @@
       return {
         shopid: sid, name: its[0].shop || ("店铺" + sid),
         city: cityOf(its[0].loc),
-        count: its.length, hot_count: hot_count,
+        count: its.length, hot_count: hot_count, hot30: hot30,
         month_sold: month_sold, week_sold: week_sold,
-        total_sold: its.reduce((a, b) => a + (b.sold_total || 0), 0),
+        total_sold: shop_total_sold,
         avg_price: avg(prices), weighted_avg_price: weighted_avg_price,
         avg_rating: avg(rated), trend_pct: trend_pct,
         main_cats: main_cats,
@@ -2030,9 +2038,13 @@
     return rows;
   }
   const SHOP_SORT = {
+    // ★ 默认：按「月销>30 的商品数量」从大到小（用户明确要求）；
+    //   数量相同再比店铺总销量、再看月销合计，保证排序稳定不抖动。
+    hot30: (a, b) => (b.hot30 || 0) - (a.hot30 || 0) || b.total_sold - a.total_sold || b.month_sold - a.month_sold,
     month: (a, b) => b.month_sold - a.month_sold || b.total_sold - a.total_sold,
     sold: (a, b) => b.total_sold - a.total_sold,
     count: (a, b) => b.count - a.count,
+    hot100: (a, b) => b.hot_count - a.hot_count || b.total_sold - a.total_sold,
     rating: (a, b) => (b.avg_rating || 0) - (a.avg_rating || 0) || b.count - a.count,
   };
   function wireShops() {
@@ -2041,7 +2053,7 @@
       const el = $("#tblShop tbody");
       if (!state.catalogAll) { el.innerHTML = '<tr><td colspan="8" style="color:#999">暂无可聚合数据。</td></tr>'; return; }
       let rows = computeShops(state.catalogAll.items);
-      rows.sort(SHOP_SORT[sortSel.value] || SHOP_SORT.count);
+      rows.sort(SHOP_SORT[sortSel.value] || SHOP_SORT.hot30);
       rows = rows.slice(0, 50);
       if (!rows.length) { el.innerHTML = '<tr><td colspan="8" style="color:#999">无店铺数据。</td></tr>'; return; }
       const cur = state.data ? state.data.currency : "NT$";
@@ -2052,19 +2064,35 @@
         const trendCls = r.trend_pct > 10 ? "pos" : r.trend_pct < -10 ? "neg" : "muted";
         const trendArrow = r.trend_pct > 0 ? "↑" : r.trend_pct < 0 ? "↓" : "→";
         const trendStr = `${trendArrow} ${Math.abs(r.trend_pct)}%`;
+        // 月销>30 的商品数：按此列降序即为店铺排名依据
+        const h30 = r.hot30 || 0;
+        const h30Html = h30
+          ? `<b>${fmt(h30)}</b><br><small class="muted">占 ${Math.round(h30 / Math.max(1, r.count) * 100)}%</small>`
+          : '<span class="muted">0</span>';
         return `<tr data-shop="${esc(r.shopid)}" class="clickable">
           <td class="rk">${medal}</td>
-          <td><b>${esc(r.name)}</b><br><small class="muted">${esc(r.city || "—")} · ${fmt(r.count)}件</small></td>
-          <td class="num"><b>${fmtMonth(r.month_sold)}</b></td>
-          <td class="num">${r.hot_count ? fmt(r.hot_count) : '<span class="muted">0</span>'}</td>
+          <td><b>${esc(r.name)}</b><br><small class="muted">${esc(r.city || "—")} · 共${fmt(r.count)}件</small></td>
+          <td class="num">${h30Html}</td>
+          <td class="num"><b>${fmt(r.total_sold)}</b></td>
+          <td class="num">${fmtMonth(r.month_sold)}</td>
           <td class="num">${cur}${fmt(r.weighted_avg_price)}</td>
           <td class="num ${trendCls}">${trendStr}</td>
           <td>${cats_html || '<span class="muted">—</span>'}</td>
         </tr>`;
       }).join("");
-      $("#shopHint").textContent = `共 ${fmt(computeShops(state.catalogAll.items).length)} 个店铺（显示 TOP 50）`;
+      const allShops = computeShops(state.catalogAll.items);
+      const h30Total = allShops.reduce((a, b) => a + (b.hot30 || 0), 0);
+      const gateMsg = (state.lib.gateUsed > 0)
+        ? `已按「月销≥${state.lib.gateUsed}」规则展示；全库月销>30 的商品共 ${fmt(h30Total)} 件`
+        : `未设月销门槛（含月销未知商品）；全库月销>30 的商品共 ${fmt(h30Total)} 件`;
+      $("#shopHint").textContent = `共 ${fmt(allShops.length)} 个店铺（显示 TOP 50）· ${gateMsg}`;
     };
-    sortSel.addEventListener("change", render);
+    // ★ 防重复绑定：wireShops 会被 refreshCurrentView 反复调用（切标签/门槛变更），
+    //   每次 addEventListener 都会叠加一个 render，切几次标签就会重算几遍。只绑一次。
+    if (!sortSel.__srBound) {
+      sortSel.__srBound = true;
+      sortSel.addEventListener("change", render);
+    }
     render();
   }
   function openShop(shopid) {
@@ -2086,7 +2114,7 @@
         ${it.img ? `<img class="pcard-img" src="${esc(thumbUrl(proxyImg(it.img)))}" referrerpolicy="no-referrer" loading="lazy" decoding="async" alt="" onerror="__imgFallback(this)">` : `<div class="pcard-img pcard-img-empty">📦</div>`}
         <div class="pcard-body">
           <div class="pcard-name" title="${esc(it.name)}">${esc(it.name)}</div>
-          <div class="pcard-price">${cur}${fmt(Math.round(it.price))}${priceSanity(it.price) ? FLAG_PRICE_WARN : (it.price_repaired ? FLAG_PRICE_FIXED : "")}</div>
+          <div class="pcard-price">${priceHtml(it)}</div>
           <div class="pcard-meta"><span class="stars">${starStr(it.rating)}</span><span class="muted">月${fmtMonth(it.month_sold)} · 总${fmt(it.sold_total)}</span></div>
         </div></div>`).join("");
     $("#modalBody").innerHTML = `<div class="p-head"><div class="p-meta">
@@ -2125,6 +2153,17 @@
     empty.style.display = "none";
     el.innerHTML = items.map((it) => pcardHtml(it)).join("");
   }
+  // 价格展示：多规格商品显示区间「NT$100–200」，普通商品显示单一价格。
+  // 数据来源：录制器的 price（下限）/ price_max（上限），后者缺失就不显示区间。
+  function priceHtml(it) {
+    const cur = state.data ? state.data.currency : "NT$";
+    const lo = Math.round(Number(it.price) || 0);
+    const hi = Math.round(Number(it.price_max) || 0);
+    const warn = priceSanity(it.price) ? FLAG_PRICE_WARN : (it.price_repaired ? FLAG_PRICE_FIXED : "");
+    if (hi > lo && lo > 0) return `${cur}${fmt(lo)}<span class="pr-sep">–</span>${fmt(hi)}${warn}`;
+    return `${cur}${fmt(lo)}${warn}`;
+  }
+
   function pcardHtml(it) {
     const cur = state.data ? state.data.currency : "NT$";
     const on = isFav(it.id) ? "on" : "";
@@ -2138,7 +2177,7 @@
       ${img}
       <div class="pcard-body">
         <div class="pcard-name" title="${esc(it.name)}">${esc(it.name)}</div>
-        <div class="pcard-price">${cur}${fmt(Math.round(it.price))}${priceSanity(it.price) ? FLAG_PRICE_WARN : (it.price_repaired ? FLAG_PRICE_FIXED : "")}</div>
+        <div class="pcard-price">${priceHtml(it)}</div>
         <div class="pcard-sku">主卖SKU：${esc(it.main_sku && it.main_sku.name ? it.main_sku.name : "—")}${it.main_sku && it.main_sku.price != null ? " · " + cur + fmt(Math.round(it.main_sku.price)) : ""}</div>
         <div class="pcard-meta">
           <span class="stars" title="评分 ${it.rating}">${starStr(it.rating)} <b>${it.rating}</b></span>
@@ -2572,6 +2611,12 @@
       if (it.name == null) it.name = "";
       if (it.price == null) it.price = 0;
       if (it.rating == null) it.rating = 0;
+      // 价格区间上限：只有严格高于现价的才认（脏数据/等于现价一律清掉，卡片按单一价格显示）
+      if (it.price_max != null) {
+        const _mx = Number(it.price_max);
+        if (!isFinite(_mx) || _mx <= Number(it.price) || _mx >= 1000000) it.price_max = undefined;
+        else it.price_max = _mx;
+      }
       if (it.reviews == null) it.reviews = 0;
       if (it.liked == null) it.liked = 0;
       if (it.stock == null) it.stock = 0;
@@ -2588,12 +2633,58 @@
     return doc;
   }
 
+  // ---------- 月销门槛（默认 30：月销<30 不进入网站） ----------
+  // 注：常量写在函数体内是刻意的 —— __sim.js 会从 app.js 里「按函数名抽取源码」单独 eval，
+  //     若依赖模块级 const，抽出来的函数会因变量未定义而崩（曾踩过）。
+  function getGate() {
+    var KEY = "shopee_gate_v1", DEF = 30;
+    try {
+      var v = localStorage.getItem(KEY);
+      if (v == null || v === "") return DEF;
+      var n = Number(v);
+      return isFinite(n) && n >= 0 ? n : DEF;
+    } catch (e) { return DEF; }
+  }
+  function setGate(v) {
+    try { localStorage.setItem("shopee_gate_v1", String(v)); } catch (e) {}
+  }
+  // 门槛变更 → 强制重新应用 catalog（绕过内容指纹去重）并刷新当前视图
+  function wireGate() {
+    const sel = $("#libMinGate");
+    if (!sel) return;
+    const g = String(getGate());
+    // 存的值若不在下拉选项里（历史遗留），回落到默认，避免下拉显示空白
+    const has = Array.prototype.some.call(sel.options, (o) => o.value === g);
+    sel.value = has ? g : "30";
+    if (!has) setGate(30);
+    if (sel.__srBound) return;
+    sel.__srBound = true;
+    sel.addEventListener("change", () => {
+      const v = Number(sel.value) || 0;
+      setGate(v);
+      _appliedSig = "";
+      if (state.catalogAll && state.catalogAll._rawItems) {
+        applyCatalog(state.catalogAll);
+      }
+      refreshCurrentView();
+      showToast(v ? "月销门槛已改为 ≥" + v + "，低动销商品已隐藏" : "月销门槛已关闭，显示全部商品");
+    });
+  }
+
   function applyCatalog(doc) {
     normalizeCatalog(doc);
-    // 月销门槛（2026-08-26 收紧）：仅保留月销≥30 的商品，过滤掉低动销长尾。
-    // 月销=0 代表「近30天月销量未知」（虾皮台站隐藏该文案 + item/get 被 403），
-    // 若其总销量≥200（疑似真实爆款）则额外保留，避免漏掉好货；其余未知项直接过滤。
-    const MIN_MONTH = 30;
+    // ★ 保留全量原始列表：applyCatalog 会就地覆盖 doc.items 为「过滤后的结果」，
+    //   若不另存一份，放宽「月销门槛」时被过滤掉的商品已从 doc.items 消失、无法恢复。
+    if (!doc._rawItems) doc._rawItems = (doc.items || []).slice();
+    const _srcItems = doc._rawItems;
+    // ★ 月销门槛（2026-09-10 用户重申并落实）：只保留「月销 ≥ 30」的商品进入网站。
+    //   此前该项被 `if (it.keep_shop) return true;` 无条件放行，导致店铺录制来的
+    //   月销 0~29 的长尾商品照样显示（线上 491 件里有 326 件月销<30）——
+    //   等于规则没生效。现改为：门槛对所有商品一视同仁，店铺录制商品同样受限。
+    //   唯一例外：月销=0 代表「虾皮台站隐藏了月销文案」，若其累计总销 ≥ 200
+    //   （疑似真实爆款）仍保留，避免因数据源缺失漏掉好货。
+    //   门槛可通过筛选栏「月销门槛」下拉调整（30 / 100 / 全部），默认 30。
+    const MIN_MONTH = getGate();
     // 渲染级保险：过滤「已从 GitHub 源真删」的商品（即使本数据来自 stale 镜像 / 本地快照也一并隐藏）。
     // ★ 服务端删除标记 doc.deleted = { id: 删除时间戳秒 }：与浏览器 localStorage 无关，
     //   换浏览器/清缓存/换电脑后删除依然生效；仅当商品被「重新录制」（last_seen 晚于删除时间）才恢复显示。
@@ -2608,7 +2699,7 @@
       for (const k in b) { if (!(k in m) || Number(b[k]) > Number(m[k])) m[k] = b[k]; }
       return m;
     })();
-    let items = (doc.items || []).filter((it) => {
+    let items = _srcItems.filter((it) => {
       const id = libItemId(it);
       if (delSet.has(id)) return false;                       // ① 本地删除集合（本机生效）
       // ★ 2026-09-03：服务端删除标记改为「无条件隐藏」，不再比较 last_seen 与删除时间的先后。
@@ -2620,13 +2711,19 @@
       if (srvDel && srvDel[id]) return false;                 // ② 服务端删除标记（跨浏览器生效）
       return true;
     });
+    let _hiddenByGate = 0;
     items = items.filter((it) => {
-      // 店铺录制商品：用户主动录制，即便虾皮台站隐藏月/总销量也始终保留、必显示。
-      if (it.keep_shop) return true;
+      if (MIN_MONTH <= 0) return true;                        // 用户选择「全部」→ 不过滤
       const ms = Number(it.month_sold) || 0;
       const ts = Number(it.sold_total != null ? it.sold_total : it.total_sold) || 0;
-      return ms >= MIN_MONTH || (ms === 0 && ts >= 200);
+      if (ms >= MIN_MONTH) return true;                       // 月销达标
+      // 月销未知（虾皮隐藏文案）但累计总销够大 → 视为疑似爆款保留
+      if (ms === 0 && ts >= 200) return true;
+      _hiddenByGate++;
+      return false;
     });
+    state.lib.hiddenByGate = _hiddenByGate;
+    state.lib.gateUsed = MIN_MONTH;
     items.sort((a, b) => (b.month_sold || 0) - (a.month_sold || 0) || (b.sold_total || b.total_sold || 0) - (a.sold_total || a.total_sold || 0));
     doc.items = items;
     doc.total = items.length;
@@ -2635,7 +2732,7 @@
     //   仍把已渲染的商品网格整块重建 → 正常显示几秒后闪屏一下、像重新加载」的假象。
     //   指纹 = catalog_ts + 过滤后的商品 id 序列；本地删除集合 / 服务端删除变化时 id 序列必变，
     //   因此「删掉商品」这类真实变更仍会照常触发刷新，不会误判为无变化。
-    const sig = (normTs(doc.catalog_ts) || 0) + ':' + items.map(libItemId).join(',');
+    const sig = (normTs(doc.catalog_ts) || 0) + ':' + MIN_MONTH + ':' + items.map(libItemId).join(',');
     if (_appliedSig === sig) return false;
     _appliedSig = sig;
     _libGridSig = "";   // 数据已变更 → 强制网格重建（指纹去重不能挡住真实更新）

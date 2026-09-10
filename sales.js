@@ -92,6 +92,17 @@
     return n;
   }
 
+  /* ★ 月销门槛（与首页 index.html 口径统一）：只保留「月销 ≥ 30」的商品进入网站。
+     月销 < 30 直接过滤掉，不出现在任何页面（含快照 / 涨跌榜 / 滞销预警）。
+     唯一例外：月销 = 0 代表「虾皮台站隐藏了月销文案」，若累计总销 ≥ 200（疑似真实爆款）仍保留。
+     历史上本页没有这道过滤，导致首页只剩月销≥30、本页却把 400+ 件长尾全列出来 —— 两页数字对不上。 */
+  var MIN_MONTH = 30;
+  function passMonthGate(it) {
+    var ms = Number(it.month_sold) || 0;
+    var ts = Number(it.sold_total != null ? it.sold_total : it.total_sold) || 0;
+    return ms >= MIN_MONTH || (ms === 0 && ts >= 200);
+  }
+
   function normCatalog(doc) {
     var items = (doc && doc.items) || (Array.isArray(doc) ? doc : []);
     for (var i = 0; i < items.length; i++) {
@@ -170,7 +181,7 @@
           var u = urls[i++];
           tryFetch(u, 9000)
             .then(function (d) {
-              var items = normCatalog(d);
+              var items = normCatalog(d).filter(passMonthGate);
               if (!items.length) throw new Error("数据为空");
               cb(null, items, u);
             })
@@ -1261,19 +1272,15 @@
   /* ---------------- 事件绑定 ---------------- */
 
   function bind() {
-    // Tab 切换
-    Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (b) {
-      b.addEventListener("click", function () {
-        Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (x) {
-          x.classList.remove("active");
-        });
-        b.classList.add("active");
-        var t = b.getAttribute("data-tab");
-        $("tab-track").classList.toggle("hidden", t !== "track");
-        $("tab-forecast").classList.toggle("hidden", t !== "forecast");
-        if (t === "forecast") renderInv();
+    // 进阶区「采购与库存」改为默认收起的折叠块（非选品功能）。
+    // 原来靠点击「采购预测」标签触发 renderInv()；现在改为展开折叠时再渲染，
+    // 避免用户没展开就白算一遍库存表。
+    var foldErp = $("tab-forecast");
+    if (foldErp) {
+      foldErp.addEventListener("toggle", function () {
+        if (foldErp.open) renderInv();
       });
-    });
+    }
 
     $("btnSnap").addEventListener("click", function () {
       if (!state.items.length) { loadSource(afterLoad); return; }

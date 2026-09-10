@@ -75,6 +75,16 @@
     return n;
   }
 
+  /* ★ 月销门槛（与首页 index.html 口径统一）：只对「月销 ≥ 30」的商品做打分 / 比价 / 趋势。
+     月销 < 30 的低动销长尾不再参与分析，避免把一堆零销量商品算进排行榜。
+     唯一例外：月销 = 0（虾皮隐藏文案）但累计总销 ≥ 200（疑似真实爆款）仍纳入。 */
+  var MIN_MONTH = 30;
+  function passMonthGate(it) {
+    var ms = Number(it.month_sold) || 0;
+    var ts = Number(it.sold_total != null ? it.sold_total : it.total_sold) || 0;
+    return ms >= MIN_MONTH || (ms === 0 && ts >= 200);
+  }
+
   function normCatalog(doc) {
     var items = (doc && doc.items) || (Array.isArray(doc) ? doc : []);
     for (var i = 0; i < items.length; i++) {
@@ -146,7 +156,7 @@
           var u = urls[i++];
           tryFetch(u, 9000)
             .then(function (d) {
-              var items = normCatalog(d);
+              var items = normCatalog(d).filter(passMonthGate);
               if (!items.length) throw new Error("数据为空");
               cb(null, items, u);
             })

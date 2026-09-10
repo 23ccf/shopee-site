@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>销售追踪 · 采购预测 — 虾皮台湾选品</title>
+<title>销售追踪 — 虾皮台湾选品</title>
 <link rel="stylesheet" href="style.css">
 <style>
 /* 本页专用补充样式（沿用 style.css 的设计变量） */
@@ -85,6 +85,24 @@ tbody tr:hover{background:#fafbfd}
   border-radius:8px;background:var(--card);white-space:nowrap}
 .sw:hover{border-color:var(--brand)}
 .sw input{accent-color:var(--brand);cursor:pointer;margin:0}
+
+/* 进阶区折叠（采购/库存 —— 非选品功能，默认收起） */
+.fold-erp{margin-top:8px;border:1px dashed var(--line);border-radius:12px;
+  background:var(--card);overflow:hidden}
+.fold-erp>summary{list-style:none;cursor:pointer;padding:15px 18px;
+  display:flex;flex-direction:column;gap:3px;user-select:none}
+.fold-erp>summary::-webkit-details-marker{display:none}
+.fold-erp>summary::marker{content:""}
+.fold-erp>summary:hover{background:#fafbfd}
+.fold-erp .fold-t{font-size:14px;font-weight:600;color:var(--muted);
+  display:flex;align-items:center;gap:7px}
+.fold-erp .fold-t::after{content:"▾";font-size:11px;color:var(--muted);
+  transition:transform .18s;display:inline-block}
+.fold-erp[open] .fold-t::after{transform:rotate(180deg)}
+.fold-erp .fold-note{font-size:11.5px;color:#aab4c2;padding-left:22px}
+.fold-erp .fold-body{padding:0 16px 16px;border-top:1px dashed var(--line);
+  margin-top:2px;padding-top:16px}
+.fold-erp .fold-body .panel{box-shadow:none;border:1px solid var(--line)}
 </style>
 </head>
 <body>
@@ -93,8 +111,8 @@ tbody tr:hover{background:#fafbfd}
   <div class="brand">
     <span class="logo">📈</span>
     <div>
-      <h1>销售追踪 · 采购预测</h1>
-      <div class="sub">每日销量快照 · 涨跌预警 · 补货建议</div>
+      <h1>销售追踪</h1>
+      <div class="sub">每日销量快照 · 涨跌预警 · 滞销判断</div>
     </div>
   </div>
   <div class="top-actions">
@@ -106,12 +124,7 @@ tbody tr:hover{background:#fafbfd}
 
 <div class="wrap">
 
-  <div class="tabs">
-    <button class="tab active" data-tab="track">销售追踪</button>
-    <button class="tab" data-tab="forecast">采购预测</button>
-  </div>
-
-  <!-- ============ Tab 1：销售追踪 ============ -->
+  <!-- ============ 销售追踪（本页主页） ============ -->
   <div id="tab-track">
     <div class="panel">
       <h3>📸 每日快照 <span class="cnt" id="snapCount"></span></h3>
@@ -166,8 +179,13 @@ tbody tr:hover{background:#fafbfd}
     </div>
   </div>
 
-  <!-- ============ Tab 2：采购预测 ============ -->
-  <div id="tab-forecast" class="hidden">
+  <!-- ============ 进阶区：采购与库存（非选品功能，默认收起） ============ -->
+  <details class="fold-erp" id="tab-forecast">
+    <summary>
+      <span class="fold-t">🧰 进阶功能：采购与库存</span>
+      <span class="fold-note">不属于「选品」范围（补货、库存、采购单、入库），平时不用展开</span>
+    </summary>
+    <div class="fold-body">
     <div class="panel">
       <h3>⚙️ 预测参数</h3>
       <div class="ctrl-row">
@@ -248,12 +266,13 @@ tbody tr:hover{background:#fafbfd}
       <h3>📥 入库记录 <span class="cnt" id="poLogCnt"></span></h3>
       <div id="poLogBox"><div class="empty-hint"><div class="ico">📥</div>还没有入库记录</div></div>
     </div>
-  </div>
+    </div><!-- /fold-body -->
+  </details>
 
 </div>
 
 <div class="toast" id="toast"></div>
 
-<script src="sales.js?v=20260910c"></script>
+<script src="sales.js?v=20260910d"></script>
 </body>
 </html>

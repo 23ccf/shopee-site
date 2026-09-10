@@ -81,6 +81,11 @@
       </select></label>
       <label>最少销量<input id="libMinSold" type="number" min="0" step="100" placeholder="0" class="lib-num"></label>
       <label>最少月销<input id="libMinMonth" type="number" min="0" step="50" placeholder="0" class="lib-num"></label>
+      <label title="决定哪些商品能进入网站：默认只保留月销≥30 的商品">月销门槛<select id="libMinGate">
+        <option value="30" selected>只留月销≥30</option>
+        <option value="100">只留月销≥100</option>
+        <option value="0">全部（含月销未知）</option>
+      </select></label>
       <label>最低评分<input id="libMinRating" type="number" min="0" max="5" step="0.1" placeholder="0" class="lib-num"></label>
     </div>
     <div class="lib-count" id="libCount"></div>
@@ -251,12 +256,14 @@
 
   <!-- 店铺分析（对标知虾「店铺分析」） -->
   <section class="panel hidden" id="panel-shops">
-    <h2>店铺分析 <small>按当月销量排行 · 点击店铺查看全部在录商品</small></h2>
+    <h2>店铺分析 <small>按「月销&gt;30 商品数」排行 · 点击店铺查看全部在录商品</small></h2>
     <div class="lib-filters">
       <label>排序<select id="shopSort">
-        <option value="month">月销量最高</option>
-        <option value="sold">总销量最高</option>
-        <option value="count">商品数最多</option>
+        <option value="hot30" selected>月销&gt;30 商品数（多→少）</option>
+        <option value="sold">店铺总销量最高</option>
+        <option value="month">月销量合计最高</option>
+        <option value="count">在录商品数最多</option>
+        <option value="hot100">月销&gt;100 商品数</option>
         <option value="rating">评分最高</option>
       </select></label>
       <span class="hint" id="shopHint"></span>
@@ -266,8 +273,9 @@
         <thead><tr>
           <th class="rk">#</th>
           <th>店铺</th>
-          <th class="num">月销量</th>
-          <th class="num">热品数</th>
+          <th class="num">月销&gt;30 商品数</th>
+          <th class="num">店铺总销量</th>
+          <th class="num">月销合计</th>
           <th class="num">均价</th>
           <th class="num">趋势</th>
           <th>主卖品类</th>
@@ -313,6 +321,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260910c"></script>
+<script src="app.js?v=20260910d"></script>
 </body>
 </html>
