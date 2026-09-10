@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260910h"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260910i"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -627,6 +627,9 @@
         if (tr.dataset.id) return openLibItem(tr.dataset.id);
         return;
       }
+      // 「查商品」命中本地库后的「查看完整详情」按钮
+      const lk = e.target.closest("#lkOpen");
+      if (lk && lk.dataset.id) return openLibItem(lk.dataset.id);
       // 「去重录」是个真链接，不能顺手把详情弹窗也打开（否则点了就跳页面 + 弹窗，双份打扰）
       if (e.target.closest(".pcard-recheck")) return;
       const card = e.target.closest(".pcard");
@@ -670,33 +673,100 @@
     });
   }
 
+  // ---------- 查商品（粘贴链接 → 先查本地库，再考虑后端）----------
+  // 为什么重写：原先这里直接 fetch("/api/product?url=...")，而线上是 GitHub Pages **静态部署、没有后端**，
+  // 于是每次查询必然 404 报错 —— 是个假功能（比空板块更糟：它会骗用户以为是网络问题）。
+  // 现在改成「本地优先」：用户库里已有 400+ 件录制数据，粘一个链接首先要回答的是
+  // 「这件我录过没有、数据多新」，这个用本地数据 0 网络就能瞬间回答；
+  // 只有库里确实没有时，才去问后端（有 self-host 后端时仍可用），并且最终一定给出可走的路而不是报错。
+  function parseShopeeRef(s) {
+    const t = String(s || "").trim();
+    if (!t) return null;
+    let m = t.match(/i\.(\d{4,})\.(\d{4,})/);          // …-i.<shopid>.<itemid>（虾皮最常见的 slug 形式）
+    if (m) return { shopid: m[1], itemid: m[2] };
+    m = t.match(/\/product\/(\d{4,})\/(\d{4,})/);       // /product/<shopid>/<itemid>
+    if (m) return { shopid: m[1], itemid: m[2] };
+    m = t.match(/^(\d{4,})[\s/,_-]+(\d{4,})$/);         // 裸「店铺ID 商品ID」
+    if (m) return { shopid: m[1], itemid: m[2] };
+    return null;
+  }
+  function refUrl(r) { return "https://shopee.tw/product/" + r.shopid + "/" + r.itemid; }
+  // 切到选品库并按关键词搜（用于「你输入的像是名字」时给出出路）
+  function gotoLibSearch(q) {
+    const tab = $('#tabs .tab-btn[data-tab="library"]');
+    if (tab) tab.click();
+    const inp = $("#libSearch");
+    if (inp) inp.value = q;
+    const btn = $("#libBtn");
+    if (btn) btn.click();
+  }
+  // 命中本地库的卡片：把「录过没有 / 多新 / 被门槛藏了没有」一次说清
+  function lookupHitHtml(it) {
+    const id = libItemId(it);
+    const ts = normTs(it.last_seen || it.first_seen);
+    const shown = ((state.data && state.data.items) || []).some((x) => libItemId(x) === id);
+    const ms = Number(it.month_sold) || 0;
+    const gateNote = shown ? "" : `<div class="lk-note">⚠️ 它没出现在商品库列表里，是因为月销 ${fmt(ms)} 低于当前门槛
+      （数据仍在库里，去 <b>sales</b> 页把门槛调成「不过滤」就能看到）。</div>`;
+    return `<div class="lk-hit">
+      <div class="lk-line">✅ 这件商品的录制数据在你的选品库里
+        <span class="pcard-fresh lv-${freshLevel(ts)}">${fmtAgo(ts) || "时间未知"}</span>
+        <span class="muted">最后采集 ${fmtStamp(ts)}</span></div>
+      ${gateNote}
+      <div class="lib-grid lk-grid">${pcardHtml(it)}</div>
+      <div class="lk-acts">
+        <button class="btn" id="lkOpen" data-id="${esc(id)}">查看完整详情</button>
+      </div>
+    </div>`;
+  }
+  // 库里没有 → 不要报错，给一条真能走的路
+  function lookupMissHtml(ref) {
+    const url = refUrl(ref);
+    return `<div class="lk-hit lk-miss">
+      <div class="lk-line">🔍 这件商品还没进你的选品库</div>
+      <div class="lk-note">静态部署没有后端，抓不了实时数据 —— 但它也不需要「抓」：
+        <b>打开原商品页逛一下，录制器就会把它录进来</b>（月销 ≥ 30 才会进列表）。</div>
+      <div class="lk-acts">
+        <a class="btn-lk" href="${esc(url)}" target="_blank" rel="noopener noreferrer">↗ 打开虾皮原商品页去录制</a>
+        <span class="muted">店铺 ${esc(ref.shopid)} · 商品 ${esc(ref.itemid)}</span>
+      </div>
+    </div>`;
+  }
   function doLookup() {
-    const input = $("#lookupInput").value.trim();
+    const raw = $("#lookupInput").value.trim();
     const hint = $("#lookupHint");
     const res = $("#lookupResult");
-    if (!input) {
-      hint.textContent = "请粘贴商品链接，或输入 店铺ID 商品ID";
+    if (!raw) { hint.textContent = "请粘贴商品链接，或输入 店铺ID 商品ID"; res.innerHTML = ""; return; }
+    const ref = parseShopeeRef(raw);
+    if (!ref) {
+      // 不是链接 → 别摆一个报错，直接带着这个词去选品库搜
+      hint.innerHTML = '没识别出商品 ID。若你想按名字找，'
+        + '<a href="#" id="lookupToLib" style="color:var(--brand);font-weight:700">点这里去选品库搜「'
+        + esc(raw.slice(0, 24)) + '」</a>。';
+      res.innerHTML = '<div class="loading">也可以粘贴形如 '
+        + '<code>https://shopee.tw/xxx-i.123456789.987654321</code> 的链接，或「123456789 987654321」。</div>';
+      const a = $("#lookupToLib");
+      if (a) a.addEventListener("click", (e) => { e.preventDefault(); gotoLibSearch(raw); });
       return;
     }
-    hint.textContent = "⏳ 正在抓取真实数据…";
+    // ① 本地优先：在**全量库**里找，0 网络。
+    //    注意必须用 _rawItems：applyCatalog 会就地把 doc.items 覆盖成「过门槛后」的列表，
+    //    只看 items 的话，被月销门槛判低的商品会被误判成「没录过」—— 数据其实一直在。
+    const all = (state.catalogAll && (state.catalogAll._rawItems || state.catalogAll.items))
+      || (state.data && state.data.items) || [];
+    const id = ref.shopid + "_" + ref.itemid;
+    const hit = all.find((it) => libItemId(it) === id);
+    if (hit) { hint.textContent = ""; res.innerHTML = lookupHitHtml(hit); return; }
+    // ② 库里没有 → 有后端时问后端，没有后端就给出「去录制」的出路
+    hint.textContent = "⏳ 选品库里没有，正在尝试后端实时抓取…";
     res.innerHTML = '<div class="loading">⏳ 抓取中…</div>';
-    fetch("/api/product?url=" + encodeURIComponent(input))
+    fetch("/api/product?url=" + encodeURIComponent(raw))
       .then((r) => {
         if (r.ok) return r.json();
         return r.json().then((j) => Promise.reject(j)).catch(() => Promise.reject({ error: "HTTP " + r.status }));
       })
-      .then((d) => {
-        hint.textContent = "";
-        renderProduct(d, "#lookupResult");
-      })
-      .catch((err) => {
-        const msg = err && err.error ? err.error : "抓取失败";
-        res.innerHTML =
-          '<div class="loading">无法获取商品详情：' +
-          esc(msg) +
-          "。当前为静态部署 / 无后端时无法抓真实数据，请在有 server.py 后端的实例上查询。</div>";
-        hint.textContent = "";
-      });
+      .then((d) => { hint.textContent = ""; renderProduct(d, "#lookupResult"); })
+      .catch(() => { hint.textContent = ""; res.innerHTML = lookupMissHtml(ref); });
   }
 
   function renderProduct(d, target) {
@@ -1439,8 +1509,14 @@
   }
   function openLibItemLocal(id, body) {
     body = body || $("#modalBody");
-    if (state.lib.catalogFallback) {
-      const it = state.lib.catalogFallback.find(
+    // 先在「当前可见列表」里找，再退到「全量库」找。
+    // 为什么必须退到全量库：catalogFallback 是**月销门槛过滤后**的列表，被判低的商品数据其实还在
+    // catalogAll._rawItems 里。少了这一层，「查商品」里命中一件月销<30 的商品，点详情会报「找不到」—— 数据在，说没了。
+    const pools = [state.lib.catalogFallback, state.catalogAll && (state.catalogAll._rawItems || state.catalogAll.items)];
+    for (let i = 0; i < pools.length; i++) {
+      const pool = pools[i];
+      if (!pool) continue;
+      const it = pool.find(
         (x) => x.id === id || String(x.itemid) === String(id) || libItemId(x) === id
       );
       if (it) return renderLibDetail(it);

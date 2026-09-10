@@ -147,6 +147,22 @@ table.grid{width:100%;border-collapse:collapse;font-size:13px}
   border-radius:10px;padding:12px 22px;font-size:14px;font-weight:700;cursor:pointer;white-space:nowrap}
 .btn:hover{filter:brightness(1.05)}
 .btn:active{transform:translateY(1px)}
+/* 查商品结果块（2026-09-10）：本地命中的「录过没有 / 多新」回执，以及未收录时的「去录制」出路。
+   两者都要像一句人话，而不是一个报错 —— 之前这里恒定输出「无法获取商品详情 HTTP 404」。 */
+.lk-hit{margin-top:14px;padding:14px 16px;border:1px solid var(--line);border-radius:12px;
+  background:#fafbfc;line-height:1.6}
+.lk-hit.lk-miss{background:#fffdf7;border-color:#f0dcae}
+.lk-line{font-size:14px;font-weight:700;color:var(--ink);display:flex;align-items:center;
+  gap:8px;flex-wrap:wrap;margin-bottom:6px}
+.lk-line .pcard-fresh{position:static}
+.lk-note{font-size:13px;color:var(--muted);margin:6px 0 10px}
+.lk-grid{margin:10px 0 0;grid-template-columns:repeat(auto-fill,minmax(170px,1fr))}
+.lk-acts{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:12px}
+.btn-lk{display:inline-block;padding:10px 18px;border-radius:10px;font-size:14px;font-weight:700;
+  text-decoration:none;color:#fff;background:linear-gradient(135deg,var(--brand),var(--brand2))}
+.btn-lk:hover{filter:brightness(1.05)}
+#lookupResult code{background:#f2f4f7;border:1px solid var(--line);border-radius:5px;
+  padding:1px 5px;font-size:12px}
 .p-warn{margin:12px 0;padding:10px 14px;border-radius:10px;background:#fff7e6;
   border:1px solid #ffd591;color:#ad6800;font-size:13px;line-height:1.5}
 
