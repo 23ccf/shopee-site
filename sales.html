@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>销售追踪 · 采购预测 — 虾皮台湾选品</title>
+<link rel="stylesheet" href="style.css">
+<style>
+/* 本页专用补充样式（沿用 style.css 的设计变量） */
+.tabs{display:flex;gap:6px;margin:18px 0 16px;border-bottom:2px solid var(--line)}
+.tab{padding:10px 20px;border:none;background:none;font-size:15px;font-weight:600;
+  color:var(--muted);cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-2px;
+  font-family:inherit;transition:.15s}
+.tab:hover{color:var(--ink)}
+.tab.active{color:var(--brand);border-bottom-color:var(--brand)}
+
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:18px}
+.stat{background:var(--card);border-radius:12px;padding:16px 18px;box-shadow:var(--shadow)}
+.stat .k{font-size:12px;color:var(--muted);margin-bottom:6px}
+.stat .v{font-size:26px;font-weight:700;line-height:1.1}
+.stat .v.up{color:var(--brand)}      /* 涨=红（台湾习惯） */
+.stat .v.down{color:var(--good)}     /* 跌=绿 */
+.stat .sub{font-size:11px;color:var(--muted);margin-top:4px}
+
+.panel{background:var(--card);border-radius:12px;padding:18px;box-shadow:var(--shadow);margin-bottom:16px}
+.panel h3{margin:0 0 14px;font-size:15px;display:flex;align-items:center;gap:8px}
+.panel h3 .cnt{font-size:12px;color:var(--muted);font-weight:400}
+
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:9px 10px;border-bottom:2px solid var(--line);
+  color:var(--muted);font-weight:600;font-size:12px;white-space:nowrap}
+td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tbody tr:hover{background:#fafbfd}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.up{color:var(--brand);font-weight:600}
+.down{color:var(--good);font-weight:600}
+.flat{color:var(--muted)}
+
+.pname{max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pname a{color:var(--ink);text-decoration:none}
+.pname a:hover{color:var(--brand);text-decoration:underline}
+
+.spark{display:inline-block;vertical-align:middle}
+.warn-tag{display:inline-block;background:#fff3cd;color:#8a6d00;border-radius:4px;
+  padding:2px 7px;font-size:11px;font-weight:600}
+.ok-tag{display:inline-block;background:#e6f6ec;color:#1e7a3c;border-radius:4px;
+  padding:2px 7px;font-size:11px;font-weight:600}
+
+.formula{background:#f8fafc;border:1px solid var(--line);border-radius:8px;
+  padding:12px 14px;font-size:12px;color:var(--muted);margin-bottom:16px;line-height:1.7}
+.formula b{color:var(--ink)}
+
+.ctrl-row{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px}
+.ctrl{display:flex;flex-direction:column;gap:4px}
+.ctrl label{font-size:11px;color:var(--muted);font-weight:600}
+.ctrl input,.ctrl select{border:1px solid var(--line);border-radius:8px;padding:7px 10px;
+  font-size:13px;font-family:inherit;min-width:110px}
+.ctrl input:focus,.ctrl select:focus{outline:none;border-color:var(--brand)}
+
+.empty-hint{text-align:center;padding:40px 20px;color:var(--muted)}
+.empty-hint .ico{font-size:42px;margin-bottom:10px}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">
+    <span class="logo">📈</span>
+    <div>
+      <h1>销售追踪 · 采购预测</h1>
+      <div class="sub">每日销量快照 · 涨跌预警 · 补货建议</div>
+    </div>
+  </div>
+  <div class="top-actions">
+    <a href="index.html" style="color:#fff;text-decoration:none;font-size:13px;opacity:.95">← 返回选品库</a>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <div class="tabs">
+    <button class="tab active" data-tab="track">销售追踪</button>
+    <button class="tab" data-tab="forecast">采购预测</button>
+  </div>
+
+  <!-- ============ Tab 1：销售追踪 ============ -->
+  <div id="tab-track">
+    <div class="panel">
+      <h3>📸 每日快照 <span class="cnt" id="snapCount"></span></h3>
+      <div class="ctrl-row">
+        <button class="btn btn-primary" id="btnSnap">记录今日快照</button>
+        <button class="btn btn-ghost" id="btnReload">刷新数据</button>
+        <button class="btn btn-danger" id="btnClear">清空快照</button>
+        <div style="flex:1"></div>
+        <div class="ctrl">
+          <label>对比基准</label>
+          <select id="baseSel"><option value="1">对比昨天</option></select>
+        </div>
+      </div>
+      <div class="formula">
+        <b>怎么用：</b>每天打开本页点一次「记录今日快照」，系统会记下每件商品的累计销量。
+        有了两天以上的记录，就能算出<b>每日真实增量</b>，看出哪些商品在起量、哪些已经停滞。
+        数据存在你本机浏览器（localStorage），不会上传。
+      </div>
+      <div id="snapMsg" style="font-size:13px;color:var(--muted)"></div>
+    </div>
+
+    <div class="stats" id="statBox"></div>
+
+    <div class="panel">
+      <h3>🔥 涨跌榜 <span class="cnt">按日增销量排序</span></h3>
+      <div id="rankBox"><div class="empty-hint"><div class="ico">📊</div>还没有快照记录</div></div>
+    </div>
+
+    <div class="panel">
+      <h3>⚠️ 滞销预警 <span class="cnt">连续多日零增长</span></h3>
+      <div id="warnBox"><div class="empty-hint"><div class="ico">✅</div>暂无预警</div></div>
+    </div>
+  </div>
+
+  <!-- ============ Tab 2：采购预测 ============ -->
+  <div id="tab-forecast" class="hidden">
+    <div class="panel">
+      <h3>⚙️ 预测参数</h3>
+      <div class="ctrl-row">
+        <div class="ctrl">
+          <label>备货周期（天）</label>
+          <input type="number" id="leadTime" value="14" min="1" max="120">
+        </div>
+        <div class="ctrl">
+          <label>安全库存天数</label>
+          <input type="number" id="safetyDays" value="7" min="0" max="60">
+        </div>
+        <div class="ctrl">
+          <label>现有库存（件）</label>
+          <input type="number" id="stockNow" value="0" min="0">
+        </div>
+        <div class="ctrl">
+          <label>只显示建议补货 &gt;</label>
+          <input type="number" id="minQty" value="1" min="0">
+        </div>
+        <button class="btn btn-primary" id="btnCalc">计算补货建议</button>
+      </div>
+      <div class="formula">
+        <b>公式：</b>建议补货量 = 日均销量 × (备货周期 + 安全库存天数) − 现有库存<br>
+        <b>日均销量</b>取自快照的历史增量平均（不足两天则用月销 ÷ 30 推算）。
+      </div>
+    </div>
+
+    <div class="stats" id="fcStatBox"></div>
+
+    <div class="panel">
+      <h3>📦 补货建议清单 <span class="cnt" id="fcCount"></span></h3>
+      <div id="fcBox"><div class="empty-hint"><div class="ico">🧮</div>点上方「计算补货建议」开始</div></div>
+    </div>
+  </div>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="sales.js"></script>
+</body>
+</html>
