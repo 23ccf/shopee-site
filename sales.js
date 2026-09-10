@@ -171,16 +171,22 @@
       Object.keys(s.items).forEach(function (id) {
         while (s.items[id].sold.length < s.dates.length) s.items[id].sold.push(null);
         while (s.items[id].month.length < s.dates.length) s.items[id].month.push(null);
+        // price 序列为后加字段，老快照没有 → 初始化并补齐（供价格趋势图使用）
+        if (!s.items[id].price) s.items[id].price = [];
+        while (s.items[id].price.length < s.dates.length) s.items[id].price.push(null);
       });
     }
 
     state.items.forEach(function (it) {
       var id = String(it.id);
-      if (!s.items[id]) s.items[id] = { sold: [], month: [] };
+      if (!s.items[id]) s.items[id] = { sold: [], month: [], price: [] };
+      if (!s.items[id].price) s.items[id].price = [];
       while (s.items[id].sold.length < idx) s.items[id].sold.push(null);
       while (s.items[id].month.length < idx) s.items[id].month.push(null);
+      while (s.items[id].price.length < idx) s.items[id].price.push(null);
       s.items[id].sold[idx] = soldOf(it);
       s.items[id].month[idx] = monthOf(it);
+      s.items[id].price[idx] = Number(it.price) || 0;   // 价格历史（供「选品洞察→价格趋势」使用）
       s.meta[id] = {
         name: it.name || "",
         price: it.price || 0,
@@ -196,6 +202,7 @@
       Object.keys(s.items).forEach(function (id) {
         s.items[id].sold = s.items[id].sold.slice(cut);
         s.items[id].month = s.items[id].month.slice(cut);
+        if (s.items[id].price) s.items[id].price = s.items[id].price.slice(cut);
       });
     }
 

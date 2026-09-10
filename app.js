@@ -1406,6 +1406,19 @@
     return `https://gitee.com/${g.owner}/${g.repo}/raw/${branch}/${file}`;
   }
 
+  // GitHub raw → jsDelivr CDN（国内可直连）。通用分支写法：
+  // raw.githubusercontent.com/{owner}/{repo}/{branch}/{path}
+  //   ↓
+  // cdn.jsdelivr.net/gh/{owner}/{repo}@{branch}/{path}
+  // 旧写法只 replace("/main/")，分支不是 main 时会生成 jsDelivr 无法解析的地址（静默 404），
+  // 等于少了一个可用源，故改为通用正则。
+  function toJsDelivr(raw) {
+    if (!raw || raw.indexOf("raw.githubusercontent.com") < 0) return null;
+    const m = raw.match(/raw\.githubusercontent\.com\/([^\/]+)\/([^\/]+)\/([^\/]+)\/(.+)$/);
+    if (!m) return null;
+    return "https://cdn.jsdelivr.net/gh/" + m[1] + "/" + m[2] + "@" + m[3] + "/" + m[4];
+  }
+
   function catalogSourceUrls() {
     const urls = [];
     const gitee = giteeRawUrl('catalog');
@@ -1413,7 +1426,8 @@
     const raw = _source.catalog_url || "data/catalog.json";
     if (raw.indexOf("raw.githubusercontent.com") >= 0) {
       urls.push(raw);                                                     // GitHub raw（CDN 缓存约 5 分钟）
-      urls.push(raw.replace("raw.githubusercontent.com/", "cdn.jsdelivr.net/gh/").replace("/main/", "@main/")); // jsDelivr（国内快，但缓存久）
+      const jsd = toJsDelivr(raw);
+      if (jsd) urls.push(jsd);                                            // jsDelivr（国内快，但缓存久）
       urls.push(raw.replace("raw.githubusercontent.com/", "ghproxy.net/https://raw.githubusercontent.com/"));   // 镜像兜底
     } else if (raw && raw.indexOf("http") === 0) {
       urls.push(raw);
@@ -1429,7 +1443,8 @@
     const raw = _source.sync_url || "data/sync.json";
     if (raw.indexOf("raw.githubusercontent.com") >= 0) {
       urls.push(raw);
-      urls.push(raw.replace("raw.githubusercontent.com/", "cdn.jsdelivr.net/gh/").replace("/main/", "@main/"));
+      const jsd = toJsDelivr(raw);
+      if (jsd) urls.push(jsd);
       urls.push(raw.replace("raw.githubusercontent.com/", "ghproxy.net/https://raw.githubusercontent.com/"));
     } else if (raw && raw.indexOf("http") === 0) {
       urls.push(raw);

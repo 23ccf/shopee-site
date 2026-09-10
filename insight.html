@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>选品洞察 — 虾皮台湾选品</title>
+<link rel="stylesheet" href="style.css">
+<style>
+/* 本页专用补充样式（沿用 style.css 的设计变量） */
+.tabs{display:flex;gap:6px;margin:18px 0 16px;border-bottom:2px solid var(--line);flex-wrap:wrap}
+.tab{padding:10px 20px;border:none;background:none;font-size:15px;font-weight:600;
+  color:var(--muted);cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-2px;
+  font-family:inherit;transition:.15s}
+.tab:hover{color:var(--ink)}
+.tab.active{color:var(--brand);border-bottom-color:var(--brand)}
+
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:18px}
+.stat{background:var(--card);border-radius:12px;padding:16px 18px;box-shadow:var(--shadow)}
+.stat .k{font-size:12px;color:var(--muted);margin-bottom:6px}
+.stat .v{font-size:26px;font-weight:700;line-height:1.1}
+.stat .v.up{color:var(--brand)}
+.stat .v.down{color:var(--good)}
+.stat .sub{font-size:11px;color:var(--muted);margin-top:4px}
+
+.panel{background:var(--card);border-radius:12px;padding:18px;box-shadow:var(--shadow);margin-bottom:16px}
+.panel h3{margin:0 0 14px;font-size:15px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.panel h3 .cnt{font-size:12px;color:var(--muted);font-weight:400}
+
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:9px 10px;border-bottom:2px solid var(--line);
+  color:var(--muted);font-weight:600;font-size:12px;white-space:nowrap}
+td{padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+tbody tr:hover{background:#fafbfd}
+.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.up{color:var(--brand);font-weight:600}
+.down{color:var(--good);font-weight:600}
+.flat{color:var(--muted)}
+
+.pname{max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pname a{color:var(--ink);text-decoration:none}
+.pname a:hover{color:var(--brand);text-decoration:underline}
+
+.grade{display:inline-block;min-width:26px;text-align:center;border-radius:6px;
+  padding:3px 8px;font-size:12px;font-weight:800;color:#fff}
+.g-S{background:#d93025}.g-A{background:#ee4d2d}.g-B{background:#f0a02a}.g-C{background:#9aa5b1}
+.scorebar{display:inline-block;width:60px;height:6px;border-radius:3px;background:var(--line);
+  overflow:hidden;vertical-align:middle;margin-right:6px}
+.scorebar i{display:block;height:100%;background:var(--brand)}
+
+.warn-tag{display:inline-block;background:#fff3cd;color:#8a6d00;border-radius:4px;
+  padding:2px 7px;font-size:11px;font-weight:600}
+.ok-tag{display:inline-block;background:#e6f6ec;color:#1e7a3c;border-radius:4px;
+  padding:2px 7px;font-size:11px;font-weight:600}
+.low-tag{display:inline-block;background:#e8f0fe;color:#1a56c4;border-radius:4px;
+  padding:2px 7px;font-size:11px;font-weight:600}
+
+.formula{background:#f8fafc;border:1px solid var(--line);border-radius:8px;
+  padding:12px 14px;font-size:12px;color:var(--muted);margin-bottom:16px;line-height:1.75}
+.formula b{color:var(--ink)}
+
+.ctrl-row{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:14px}
+.ctrl{display:flex;flex-direction:column;gap:4px}
+.ctrl label{font-size:11px;color:var(--muted);font-weight:600}
+.ctrl input,.ctrl select{border:1px solid var(--line);border-radius:8px;padding:7px 10px;
+  font-size:13px;font-family:inherit;min-width:110px}
+.ctrl input:focus,.ctrl select:focus{outline:none;border-color:var(--brand)}
+.ctrl input[type=range]{min-width:120px;padding:0}
+
+.empty-hint{text-align:center;padding:40px 20px;color:var(--muted)}
+.empty-hint .ico{font-size:42px;margin-bottom:10px}
+
+.group{border:1px solid var(--line);border-radius:10px;margin-bottom:12px;overflow:hidden}
+.group-hd{background:#f8fafc;padding:11px 14px;display:flex;align-items:center;gap:12px;
+  flex-wrap:wrap;font-size:13px}
+.group-hd .gname{font-weight:700;flex:1;min-width:200px}
+.group-bd{padding:4px 0}
+
+.chart-wrap{overflow-x:auto;padding:6px 0}
+.datalist-hint{font-size:12px;color:var(--muted);margin-top:6px}
+tr.best td{background:#fffbf0}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">
+    <span class="logo">🧭</span>
+    <div>
+      <h1>选品洞察</h1>
+      <div class="sub">综合打分 · 跨店比价 · 价格趋势</div>
+    </div>
+  </div>
+  <div class="top-actions">
+    <a href="sales.html" style="color:#fff;text-decoration:none;font-size:13px;opacity:.95">📈 销售追踪</a>
+    <a href="index.html" style="color:#fff;text-decoration:none;font-size:13px;opacity:.95">← 返回选品库</a>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <div class="tabs">
+    <button class="tab active" data-tab="score">选品打分</button>
+    <button class="tab" data-tab="compare">跨店比较</button>
+    <button class="tab" data-tab="price">价格趋势</button>
+  </div>
+
+  <!-- ============ Tab 1：选品打分 ============ -->
+  <div id="tab-score">
+    <div class="panel">
+      <h3>⚙️ 打分权重 <span class="cnt">拖动调整，实时重算</span></h3>
+      <div class="ctrl-row">
+        <div class="ctrl">
+          <label>月销权重 <b id="w1v">35</b></label>
+          <input type="range" id="w1" min="0" max="60" value="35">
+        </div>
+        <div class="ctrl">
+          <label>增长权重 <b id="w2v">25</b></label>
+          <input type="range" id="w2" min="0" max="60" value="25">
+        </div>
+        <div class="ctrl">
+          <label>口碑权重 <b id="w3v">20</b></label>
+          <input type="range" id="w3" min="0" max="60" value="20">
+        </div>
+        <div class="ctrl">
+          <label>价格带权重 <b id="w4v">10</b></label>
+          <input type="range" id="w4" min="0" max="60" value="10">
+        </div>
+        <div class="ctrl">
+          <label>竞争度权重 <b id="w5v">10</b></label>
+          <input type="range" id="w5" min="0" max="60" value="10">
+        </div>
+        <div class="ctrl">
+          <label>甜区价格（NT$）</label>
+          <input type="number" id="sweetPrice" value="399" min="1" step="10">
+        </div>
+        <button class="btn btn-primary" id="btnScore">重新计算</button>
+      </div>
+      <div class="formula">
+        <b>打分口径：</b>各维度先归一化到 0~100，再按权重加权得到总分（0~100）。<br>
+        · <b>月销</b>：月销量取对数归一（销量越高边际收益递减）<br>
+        · <b>增长</b>：近期日均 / 月均日均，&gt;1 表示在起量；无快照记录时按中性 50 分计<br>
+        · <b>口碑</b>：评分（0~5 换算）× 0.6 + 评价数对数 × 0.4<br>
+        · <b>价格带</b>：越接近「甜区价格」分越高，过高/过低都扣分<br>
+        · <b>竞争度</b>：同款商品（名称相似）越少分越高<br>
+        <b>分档：</b>S ≥ 85　A ≥ 70　B ≥ 55　C &lt; 55
+      </div>
+    </div>
+
+    <div class="stats" id="scoreStatBox"></div>
+
+    <div class="panel">
+      <h3>🏆 选品排行榜 <span class="cnt" id="scoreCount"></span></h3>
+      <div class="ctrl-row">
+        <div class="ctrl">
+          <label>只看分档</label>
+          <select id="gradeFilter">
+            <option value="">全部</option>
+            <option value="S">S 档（≥85）</option>
+            <option value="A">A 档（≥70）</option>
+            <option value="B">B 档（≥55）</option>
+            <option value="C">C 档（&lt;55）</option>
+          </select>
+        </div>
+        <div class="ctrl">
+          <label>价格区间下限</label>
+          <input type="number" id="pMin" value="0" min="0">
+        </div>
+        <div class="ctrl">
+          <label>价格区间上限</label>
+          <input type="number" id="pMax" value="99999" min="0">
+        </div>
+        <div class="ctrl">
+          <label>最低月销</label>
+          <input type="number" id="mMin" value="0" min="0">
+        </div>
+      </div>
+      <div id="scoreBox"><div class="empty-hint"><div class="ico">🏆</div>正在加载商品数据…</div></div>
+    </div>
+  </div>
+
+  <!-- ============ Tab 2：跨店比较 ============ -->
+  <div id="tab-compare" class="hidden">
+    <div class="panel">
+      <h3>🔍 同款识别设置</h3>
+      <div class="ctrl-row">
+        <div class="ctrl">
+          <label>名称相似度阈值 <b id="simv">0.55</b></label>
+          <input type="range" id="simTh" min="30" max="90" value="55">
+        </div>
+        <div class="ctrl">
+          <label>只显示店铺数 ≥</label>
+          <input type="number" id="minShops" value="2" min="2" max="20">
+        </div>
+        <div class="ctrl">
+          <label>排序方式</label>
+          <select id="cmpSort">
+            <option value="spread">价差金额（大→小）</option>
+            <option value="rate">溢价率（高→低）</option>
+            <option value="shops">店铺数（多→少）</option>
+            <option value="sold">合计月销（高→低）</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" id="btnCompare">开始识别</button>
+      </div>
+      <div class="formula">
+        <b>原理：</b>把商品名切成 2 字词碎片（中文）与单词（英文），用
+        <b>Jaccard 相似度</b>（共有词 / 全部词）判断两件商品是否同款，达到阈值即归为一组。<br>
+        同组内按价格排序，<b>最低价</b>标为「全网最低」，其余显示相对最低价的溢价金额与溢价率 —— 差价大的组就是可以找更便宜货源、或可以提价的机会点。
+      </div>
+    </div>
+
+    <div class="stats" id="cmpStatBox"></div>
+
+    <div class="panel">
+      <h3>🏬 跨店比价结果 <span class="cnt" id="cmpCount"></span></h3>
+      <div id="cmpBox"><div class="empty-hint"><div class="ico">🏬</div>点上方「开始识别」</div></div>
+    </div>
+  </div>
+
+  <!-- ============ Tab 3：价格趋势 ============ -->
+  <div id="tab-price" class="hidden">
+    <div class="panel">
+      <h3>📉 价格历史</h3>
+      <div class="ctrl-row">
+        <div class="ctrl" style="flex:1;min-width:280px">
+          <label>选择商品（输入关键词搜索）</label>
+          <input type="text" id="pSearch" list="pList" placeholder="输入商品名关键词…" autocomplete="off">
+          <datalist id="pList"></datalist>
+        </div>
+        <button class="btn btn-primary" id="btnPick">查看趋势</button>
+        <button class="btn btn-ghost" id="btnSnapPrice">记录今日价格</button>
+      </div>
+      <div class="formula">
+        <b>数据从哪来：</b>每次打开本页（或点「记录今日价格」）都会把当天的价格写入本机快照。
+        积累两天以上就能画出价格曲线。数据存在浏览器 localStorage，不上传服务器。<br>
+        <b>用途：</b>看清商品是在打价格战（持续降价）还是稳价，判断现在跟卖是否划算。
+      </div>
+      <div id="priceMsg" class="datalist-hint"></div>
+    </div>
+
+    <div class="stats" id="pxStatBox"></div>
+
+    <div class="panel">
+      <h3>📈 价格曲线</h3>
+      <div class="chart-wrap" id="pxChart">
+        <div class="empty-hint"><div class="ico">📈</div>请选择一件商品</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>📋 历史明细</h3>
+      <div id="pxTable"><div class="empty-hint"><div class="ico">📋</div>暂无记录</div></div>
+    </div>
+  </div>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="insight.js"></script>
+</body>
+</html>
