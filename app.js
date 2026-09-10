@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260910d"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260910e"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -2149,9 +2149,27 @@
     const empty = $("#favEmpty");
     if (!state.catalogAll) { el.innerHTML = '<div class="empty">暂无可用的商品库数据。</div>'; return; }
     const items = (state.catalogAll.items || []).filter((i) => state.fav.includes(i.id));
-    if (!items.length) { el.innerHTML = ""; empty.style.display = "block"; return; }
-    empty.style.display = "none";
+    // ★ 2026-09-10：收藏的商品若月销跌破门槛会被门槛隐藏。收藏是用户手动标记的，
+    //   悄悄消失最让人困惑（「我收藏的东西呢？」），所以这里显式告知被隐藏了几件。
+    const rawAll = state.catalogAll._rawItems || [];
+    const allFav = rawAll.filter((i) => state.fav.includes(libItemId(i)));
+    const hiddenFav = Math.max(0, allFav.length - items.length);
+    const note = hiddenFav
+      ? `<b>另有 ${fmt(hiddenFav)} 件收藏因月销低于 ${state.lib.gateUsed} 被门槛隐藏</b>。`
+        + `把筛选栏「月销门槛」切成「全部」即可看到。`
+      : "";
+    if (!items.length) {
+      el.innerHTML = "";
+      empty.style.display = "block";
+      empty.innerHTML = state.fav.length
+        ? (note || "收藏的商品当前都不在商品库中（可能已被删除）。")
+        : "还没有收藏。在「商品库」任意商品卡片点 ❤ 即可加入。";
+      return;
+    }
+    empty.style.display = hiddenFav ? "block" : "none";
+    if (hiddenFav) empty.innerHTML = note;
     el.innerHTML = items.map((it) => pcardHtml(it)).join("");
+    refreshFavButtons();
   }
   // 价格展示：多规格商品显示区间「NT$100–200」，普通商品显示单一价格。
   // 数据来源：录制器的 price（下限）/ price_max（上限），后者缺失就不显示区间。
@@ -2271,9 +2289,15 @@
   function renderToday() {
     const T = todayState;
     const today = todayStrUTC8();
-    let items = (state.lib.catalogFallback || []).filter(
-      (it) => dateStrUTC8(it.last_seen || it.first_seen) === today
-    );
+    const isToday = (it) => dateStrUTC8(it.last_seen || it.first_seen) === today;
+    // ★ 2026-09-10：门槛会把它挡掉，但「今日录制」是**录制反馈**，不是选品库。
+    //   若只显示过门槛后的件数，用户录了 10 件却只看到 2 件，会以为录制器坏了。
+    //   所以这里同时算出「今天实际录了多少」，把被门槛隐藏的数量明说。
+    const rawAll = (state.catalogAll && state.catalogAll._rawItems)
+      || state.lib.catalogFallback || [];
+    const rawTodayN = rawAll.filter(isToday).length;
+    let items = (state.lib.catalogFallback || []).filter(isToday);
+    const passedTodayN = items.length;                 // 过门槛后的今日件数（搜索前）
     const q = (T.q || "").trim().toLowerCase();
     if (q) items = items.filter((it) =>
       ((it.name || "") + " " + (it.shop || "") + " " + (it.brand || "") + " " + (it.cats || []).join(" "))
@@ -2303,12 +2327,17 @@
     const syncHint = state.lastSyncTs
       ? ` · 最后同步 ${fmtLocalTime(state.lastSyncTs)}（云端约每 3–5 分钟刷新一次）`
       : "";
+    const hiddenToday = Math.max(0, rawTodayN - passedTodayN);
     $("#todayCount").textContent =
       `今日（台北 ${today}）录制 ${fmt(total)} 件`
+      + (hiddenToday ? ` · 另有 ${fmt(hiddenToday)} 件月销低于 ${state.lib.gateUsed} 未进网站` : "")
       + (q ? ` · 搜索「${T.q}」命中 ${items.length} 件` : "")
       + syncHint;
     if (!pageItems.length) {
-      grid.innerHTML = '<div class="empty">今天还没有录制到商品。打开录制器，去虾皮买家端浏览 / 搜索，新商品会自动出现在这里。</div>';
+      grid.innerHTML = hiddenToday
+        ? '<div class="empty">今天录到的商品月销都低于门槛，按规则没有进入网站。<br>'
+          + '想看看它们：把上方筛选栏的「月销门槛」切成「全部」即可显示，或到「商品库」查看。</div>'
+        : '<div class="empty">今天还没有录制到商品。打开录制器，去虾皮买家端浏览 / 搜索，新商品会自动出现在这里。</div>';
     } else {
       grid.innerHTML = pageItems.map((it) => pcardHtml(it)).join("");
     }
