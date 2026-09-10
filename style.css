@@ -188,6 +188,10 @@ table.grid{width:100%;border-collapse:collapse;font-size:13px}
   padding:1px 9px;white-space:nowrap}
 .lib-health .hb-item b{color:#b03030}
 .lib-health .hb-note{color:#8d7a4f}
+.lib-health .hb-fix{background:#fff;border:1px solid #e0b878;color:#8a5a12;font-size:12px;
+  font-weight:700;border-radius:20px;padding:3px 11px;cursor:pointer;white-space:nowrap}
+.lib-health .hb-fix:hover{background:#8a5a12;color:#fff;border-color:#8a5a12}
+.lib-health .hb-fix.on{background:#8a5a12;color:#fff;border-color:#8a5a12}
 .lib-health .hb-close{margin-left:auto;background:none;border:none;color:#b09060;cursor:pointer;
   font-size:15px;line-height:1;padding:0 2px}
 .lib-health .hb-close:hover{color:#8a5a12}

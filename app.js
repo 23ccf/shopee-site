@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260910k"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260910l"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -22,6 +22,7 @@
     lib: {
       q: "", cat: "", loc: "", sort: "month",
       min_price: null, max_price: null, min_sold: 0, min_month: 0, min_rating: 0,
+      needFix: false,   // 「只看待补数据」：缺价格 或 缺名称/主图
       page: 1, size: 48, total: 0, pages: 1, items: [],
       cats: [], locs: [], catalogFallback: null, offline: false,
       _dataReady: false,   // 首次拿到有效商品数据后置 true：此后不再允许把网格降级成「加载中」
@@ -1656,10 +1657,14 @@
   function renderLibHealth() {
     const el = $("#libHealth");
     if (!el) return;
-    if (localStorage.getItem(HEALTH_KEY) === "off") { el.classList.add("hidden"); return; }
+    const dismissed = localStorage.getItem(HEALTH_KEY) === "off";
+    // ★ 「待补视图开着」时绝不能隐藏体检条：否则用户点 × 之后，筛选还开着、
+    //   取消按钮却没了 → 人被困在几十件商品里以为数据丢了，只能刷新页面才能出来。
+    if (dismissed && !(state.lib && state.lib.needFix)) { el.classList.add("hidden"); return; }
     const raw = (state.catalogAll && (state.catalogAll._rawItems || state.catalogAll.items)) || [];
     if (!raw.length) { el.classList.add("hidden"); return; }
     const h = dataHealth(raw);
+    const needFixN = raw.filter((it) => !(Number(it.price) > 0) || !it.name || !it.img).length;
     const parts = [];
     if (h.noPrice) parts.push("缺价格 <b>" + fmt(h.noPrice) + "</b>");
     if (h.noMeta) parts.push("缺名称/主图 <b>" + fmt(h.noMeta) + "</b>");
@@ -1673,17 +1678,48 @@
       : "";
     el.innerHTML = '<span class="hb-title">📋 数据体检</span>'
       + parts.map((p) => '<span class="hb-item">' + p + "</span>").join("")
+      // 待补视图是个「筛选器」，必须一眼看出它开着、并有个明确的关闭入口，
+      // 否则用户看到商品变少了会以为数据丢了。
+      + (state.lib && state.lib.needFix
+          ? '<button class="hb-fix on" data-fix="1" title="点一下取消筛选，回到全部商品">'
+            + "✓ 正在只看待补数据 · 点此取消</button>"
+          : '<button class="hb-fix" data-fix="1" title="按月销从高到低排，先补最值钱的">只看待补数据 <b>'
+            + fmt(needFixN) + "</b> 件 ›</button>")
       + '<span class="hb-note">全库 ' + fmt(h.total) + " 件。" + rangeNote
-      + '卡片上的「↻ 去重录」可逐件补齐（打开原页即可，零风控）。</span>'
+      + '点卡片上的「↻ 去重录」逐件补齐（打开原页即可，零风控）。</span>'
       + '<button class="hb-close" title="知道了，不再提示">×</button>';
     el.classList.remove("hidden");
     const c = el.querySelector(".hb-close");
     if (c) {
       c.addEventListener("click", () => {
         try { localStorage.setItem(HEALTH_KEY, "off"); } catch (e) {}
+        // 关掉体检条 = 「别烦我了」→ 顺手退出「只看待补数据」，
+        // 否则筛选留着、入口没了，用户被困住（见上方注释）。
+        if (state.lib && state.lib.needFix) {
+          state.lib.needFix = false;
+          state.lib.page = 1;
+          applyLibFiltersView();
+          return;
+        }
         el.classList.add("hidden");
       });
     }
+    const fx = el.querySelector(".hb-fix");
+    if (fx) {
+      fx.addEventListener("click", () => {
+        const L = state.lib;
+        L.needFix = !L.needFix;
+        if (L.needFix) { L.sort = "month"; L.page = 1; }   // 待补优先按月销：先补最值钱的
+        L.page = 1;
+        try { $("#libSort").value = L.sort; } catch (e) {}
+        libRerender();
+        applyLibFiltersView();
+      });
+    }
+  }
+  // 让外部（如 libSort 变化）也能触发一次「待补」视图刷新，避免依赖内部闭包
+  function applyLibFiltersView() {
+    try { clientLibSearch(); } catch (e) { libRerender(); }
   }
 
   function applyLibFilters(items, L) {
@@ -1699,6 +1735,9 @@
     if (L.min_sold) its = its.filter((it) => (it.sold_total || 0) >= L.min_sold);
     if (L.min_month) its = its.filter((it) => (it.month_sold || 0) >= L.min_month);
     if (L.min_rating) its = its.filter((it) => (it.rating || 0) >= L.min_rating);
+    // 只看待补数据：缺价格 或 缺名称/主图。配合「按月销降序」= 先补最值钱的那几件
+    // （月销已证明好卖、却看不到价格的商品，补起来收益最大）。
+    if (L.needFix) its = its.filter((it) => !(Number(it.price) > 0) || !it.name || !it.img);
     const map = {
       sold: (x) => -x.sold_total, sold30: (x) => -x.sold, total_sold: (x) => -x.sold_total,
       month: (x) => -(x.month_sold || 0), week: (x) => -(x.week_sold || 0),
@@ -1752,7 +1791,7 @@
     renderLibHealth();          // 体检条只依赖全量库，不依赖筛选 → 放在指纹去重之前，保证数据变了就一定刷新
     const selSig = libSel && libSel.selected ? Array.from(libSel.selected).sort().join(",") : "";
     const sig = [L.q, L.cat, L.loc, L.sort, L.min_price, L.max_price, L.min_sold, L.min_month,
-      L.min_rating, L.page, L.size, L.total, items.length, _loadedCatalogTs, selSig,
+      L.min_rating, L.needFix, L.page, L.size, L.total, items.length, _loadedCatalogTs, selSig,
       pageItems.map(libItemId).join(",")].join("|");
     if (sig === _libGridSig && $("#libGrid").children.length) return;
     _libGridSig = sig;
