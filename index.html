@@ -90,6 +90,8 @@
         <option value="0">全部（含月销未知）</option>
       </select></label>
       <label>最低评分<input id="libMinRating" type="number" min="0" max="5" step="0.1" placeholder="0" class="lib-num"></label>
+      <label class="lib-favonly"><input type="checkbox" id="libFavOnly"> ❤️ 只看收藏</label>
+      <label>收藏分组<select id="libFavGroup" disabled><option value="">全部分组</option></select></label>
     </div>
     <div class="lib-count" id="libCount"></div>
     <div class="lib-health hidden" id="libHealth"></div>
@@ -290,6 +292,6 @@
   </div>
 </div>
 
-<script src="app.js?v=20260910r"></script>
+<script src="app.js?v=20260910s"></script>
 </body>
 </html>

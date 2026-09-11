@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260910r"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260910s"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -22,6 +22,7 @@
     lib: {
       q: "", cat: "", loc: "", sort: "month",
       min_price: null, max_price: null, min_sold: 0, min_month: 0, min_rating: 0,
+      favOnly: false, favGroup: "",   // 2026-09-11 商品库「❤️ 只看收藏 / 按分组筛选」
       needFix: false,   // 「只看待补数据」：缺价格 或 缺名称/主图
       page: 1, size: 48, total: 0, pages: 1, items: [],
       cats: [], locs: [], catalogFallback: null, offline: false,
@@ -1338,6 +1339,18 @@
     els.minSold.addEventListener("change", () => { L.min_sold = parseInt(els.minSold.value) || 0; go(true); });
     els.minMonth.addEventListener("change", () => { L.min_month = parseInt(els.minMonth.value) || 0; go(true); });
     els.minRating.addEventListener("change", () => { L.min_rating = parseFloat(els.minRating.value) || 0; go(true); });
+    // ★ 2026-09-11 商品库「❤️ 只看收藏 / 收藏分组」：与同面板其他筛选一致，改了立即生效（铁律 23）
+    const favOnlyEl = $("#libFavOnly"), favGroupEl = $("#libFavGroup");
+    if (favOnlyEl) favOnlyEl.addEventListener("change", () => {
+      L.favOnly = favOnlyEl.checked;
+      if (favGroupEl) {
+        favGroupEl.disabled = !favOnlyEl.checked;
+        if (!favOnlyEl.checked) { L.favGroup = ""; favGroupEl.value = ""; }
+      }
+      go(true);
+    });
+    if (favGroupEl) favGroupEl.addEventListener("change", () => { L.favGroup = favGroupEl.value; go(true); });
+    refreshFavGroupSelect();   // 2026-09-11 绑定完成时先填充一次分组下拉（收藏早就在本地）
 
     els.pager.addEventListener("click", (e) => {
       const b = e.target.closest("button[data-page]");
@@ -1767,6 +1780,16 @@
     // 只看待补数据：缺价格 或 缺名称/主图。配合「按月销降序」= 先补最值钱的那几件
     // （月销已证明好卖、却看不到价格的商品，补起来收益最大）。
     if (L.needFix) its = its.filter((it) => !(Number(it.price) > 0) || !it.name || !it.img);
+    // ★ 2026-09-11 效率优化：商品库「❤️ 只看收藏 / 按分组筛选」。
+    //   逛市场时一键只看自己收藏的短名单，且可叠加全部现有排序/筛选（收藏面板只能按收藏顺序，做不到这点）。
+    //   分组下拉与收藏面板共用 favGroupOptions()，随收藏变化自动更新；纯前端筛选、绝不改数据。
+    if (L.favOnly) {
+      its = its.filter((it) => isFav(libItemId(it)));
+      if (L.favGroup) its = its.filter((it) => {
+        const g = (state.fav[libItemId(it)] || {}).g || "";
+        return L.favGroup === "__none" ? !g : g === L.favGroup;
+      });
+    }
     const map = {
       sold: (x) => -x.sold_total, sold30: (x) => -x.sold, total_sold: (x) => -x.sold_total,
       month: (x) => -(x.month_sold || 0), week: (x) => -(x.week_sold || 0),
@@ -1778,6 +1801,20 @@
     const keyFn = map[L.sort] || map.sold;
     its.sort((a, b) => keyFn(a) - keyFn(b));
     return its;
+  }
+
+  // 商品库「收藏分组」下拉：与收藏面板共用一份分组名，随收藏变化自动更新；
+  // 选中的分组若已无商品（例如把该组商品全取消收藏），自动回退到「全部分组」。
+  function refreshFavGroupSelect() {
+    const sel = $("#libFavGroup");
+    if (!sel) return;
+    const opts = favGroupOptions();
+    const parts = ['<option value="">全部分组</option>', '<option value="__none">未分组</option>'];
+    opts.forEach((g) => parts.push('<option value="' + esc(g) + '">' + esc(g) + "</option>"));
+    sel.innerHTML = parts.join("");
+    if (state.lib.favGroup && state.lib.favGroup !== "__none" && opts.indexOf(state.lib.favGroup) < 0) state.lib.favGroup = "";
+    sel.value = state.lib.favGroup;
+    sel.disabled = !state.lib.favOnly;
   }
 
   // 网格渲染指纹（见 clientLibSearch 内的去重逻辑）；数据被替换时必须清空才会重新渲染。
@@ -1820,7 +1857,7 @@
     renderLibHealth();          // 体检条只依赖全量库，不依赖筛选 → 放在指纹去重之前，保证数据变了就一定刷新
     const selSig = libSel && libSel.selected ? Array.from(libSel.selected).sort().join(",") : "";
     const sig = [L.q, L.cat, L.loc, L.sort, L.min_price, L.max_price, L.min_sold, L.min_month,
-      L.min_rating, L.needFix, L.page, L.size, L.total, items.length, _loadedCatalogTs, selSig,
+      L.min_rating, L.needFix, L.favOnly, L.favGroup, L.page, L.size, L.total, items.length, _loadedCatalogTs, selSig,
       pageItems.map(libItemId).join(",")].join("|");
     if (sig === _libGridSig && $("#libGrid").children.length) return;
     _libGridSig = sig;
@@ -2982,6 +3019,7 @@
       b.textContent = on ? "❤" : "🤍";
       b.title = on ? "取消收藏" : "收藏";
     });
+    refreshFavGroupSelect();   // 2026-09-11 收藏变化（心/分组）时同步刷新商品库的分组下拉
   }
   function wireFav() {
     const bar = $("#favBar");
