@@ -583,16 +583,22 @@
       });
     });
 
+    state.groups = groups;
+    sortGroups();
+    renderCompare();
+    return groups;
+  }
+
+  // 排序是「展示层」的事，单独抽出来 —— 否则改一下排序下拉就得重跑一次同款识别
+  // （还要再看一次「识别到 N 组」的提示），用户只会认为这个下拉是坏的。★ 2026-09-11
+  function sortGroups() {
     var sortBy = $("cmpSort").value;
-    groups.sort(function (a, b) {
+    state.groups.sort(function (a, b) {
       if (sortBy === "rate") return b.rate - a.rate;
       if (sortBy === "shops") return b.shops.length - a.shops.length;
       if (sortBy === "sold") return b.totalMonth - a.totalMonth;
       return b.spread - a.spread;
     });
-
-    state.groups = groups;
-    renderCompare();
   }
 
   function renderCompare() {
@@ -824,6 +830,41 @@
       });
     $("simTh").addEventListener("input", function () {
       $("simv").textContent = (this.value / 100).toFixed(2);
+    });
+
+    // ★ 2026-09-11：打分 / 比价两块面板此前「改了没反应」，现在统一成「改完立即生效」——
+    //   · 权重滑块 w1~w5：面板标题写着「拖动调整，实时重算」，实际只更新了数字标签，
+    //     必须再点一次「重新计算」；用户在标题的承诺下拖完滑块，看到的是纹丝不动的榜单。
+    //   · sweetPrice 甜区价格：「价格带评分」的基准，却完全没有监听。
+    //   · cmpSort 排序方式：只是排序，却被迫重跑一次同款识别（还要再看一次 toast）。
+    //   · simTh / minShops：只在点「开始识别」时被读取。
+    //   同一面板两套规则，用户无法预期，只会认为控件坏了。
+    //   权重用 change（松开滑块才触发）而非 input（每动一格都触发）：实测全库 491 件
+    //   一次重算约 80~95ms，按「松开」只算一次，不会拖到卡顿。
+    [["w1", "w1v"], ["w2", "w2v"], ["w3", "w3v"], ["w4", "w4v"], ["w5", "w5v"]]
+      .forEach(function (p) {
+        $(p[0]).addEventListener("change", function () {
+          if (!state.items.length) return;
+          state.scored = computeScores();
+          renderScores();
+        });
+      });
+
+    ["simTh", "minShops"].forEach(function (id) {
+      $(id).addEventListener("change", function () {
+        if (!state.groups || !state.groups.length) return;   // 还没识别过就别擅自跑
+        runCompare();
+      });
+    });
+    $("cmpSort").addEventListener("change", function () {
+      if (!state.groups || !state.groups.length) return;
+      sortGroups();        // 只重排，不重新识别
+      renderCompare();
+    });
+    $("sweetPrice").addEventListener("change", function () {
+      if (!state.items.length) return;
+      state.scored = computeScores();   // 甜区价格变 → 价格带分变 → 总分与排名一起重算
+      renderScores();
     });
 
     $("btnScore").addEventListener("click", function () {
