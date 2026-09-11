@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260910m"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260910n"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -3249,13 +3249,19 @@
   function wireCalc() {
     const ids = ["cCost", "cWeight", "cShipKg", "cPack", "cRate", "cMargin", "cOther"];
     const calc = () => {
-      const cost = +$("#cCost").value || 0;
-      const weight = +$("#cWeight").value || 0;
-      const shipKg = +$("#cShipKg").value || 0;
-      const pack = +$("#cPack").value || 0;
-      const rate = (+$("#cRate").value || 0) / 100;
-      const margin = (+$("#cMargin").value || 0) / 100;
-      const other = (+$("#cOther").value || 0) / 100;
+      // 输入框虽然写了 min="0"，但浏览器照样允许直接敲进负号 —— 负成本会算出「负数建议售价」，
+      // 是纯粹的垃圾输出，用户还可能当真照做。这里统一按 0 参与计算，并在下面显式告知（不静默改数）。
+      const num = (sel) => +$(sel).value || 0;
+      const neg = ["#cCost", "#cWeight", "#cShipKg", "#cPack", "#cRate", "#cMargin", "#cOther"]
+        .some((s) => num(s) < 0);
+      const pos = (v) => (v > 0 ? v : 0);
+      const cost = pos(num("#cCost"));
+      const weight = pos(num("#cWeight"));
+      const shipKg = pos(num("#cShipKg"));
+      const pack = pos(num("#cPack"));
+      const rate = pos(num("#cRate")) / 100;
+      const margin = pos(num("#cMargin")) / 100;
+      const other = pos(num("#cOther")) / 100;
       const ship = weight * shipKg;
       const base = cost + ship + pack;
       const denom = 1 - rate - other - margin;
@@ -3263,16 +3269,21 @@
       const feeComm = price * rate, feeOther = price * other;
       const profit = price - base - feeComm - feeOther;
       const cur = state.data ? state.data.currency : "NT$";
-      const m = (n) => cur + fmt(Math.round(n));
-      const cls = profit >= 0 ? "pos" : "neg";
+      // 目标利润率 0% 时 profit 会因浮点误差算出 -1e-14，Math.round 后是 -0 →
+      // 页面显示成「NT$-0」，利润率显示成「-0.0%」，看着像个 bug 的数字。
+      // 统一把负零归一成 0，并让配色也跟着取整后的值走（否则 0 利润会被涂成红色）。
+      const m = (n) => cur + fmt(Math.round(n) || 0);
+      const pct = +((price ? profit / price : 0) * 100).toFixed(1) || 0;
+      const cls = (Math.round(profit) || 0) >= 0 ? "pos" : "neg";
       $("#calcOut").innerHTML = `
         <div class="calc-row"><span>单件成本+物流+打包</span><b>${m(base)}</b></div>
-        <div class="calc-row"><span>平台佣金 (${$("#cRate").value}%)</span><b>${m(feeComm)}</b></div>
-        <div class="calc-row"><span>其他费率 (${$("#cOther").value}%)</span><b>${m(feeOther)}</b></div>
+        <div class="calc-row"><span>平台佣金 (${pos(num("#cRate"))}%)</span><b>${m(feeComm)}</b></div>
+        <div class="calc-row"><span>其他费率 (${pos(num("#cOther"))}%)</span><b>${m(feeOther)}</b></div>
         <div class="calc-row big"><span>建议售价</span><b class="pos">${price ? m(price) : "—"}</b></div>
         <div class="calc-row big"><span>单件利润</span><b class="${cls}">${price ? m(profit) : "—"}</b></div>
-        <div class="calc-row"><span>实际利润率</span><b class="${cls}">${price ? (profit / price * 100).toFixed(1) + "%" : "—"}</b></div>
+        <div class="calc-row"><span>实际利润率</span><b class="${cls}">${price ? pct.toFixed(1) + "%" : "—"}</b></div>
         ${denom <= 0 ? '<div class="calc-warn">⚠️ 费率+利润率合计已超过 100%，无法定价，请下调佣金/其他费率或目标利润率。</div>' : ""}
+        ${neg ? '<div class="calc-warn">⚠️ 有负数输入（成本 / 重量 / 费率不能为负），已按 0 计算。</div>' : ""}
       `;
     };
     ids.forEach((id) => $("#" + id).addEventListener("input", calc));
