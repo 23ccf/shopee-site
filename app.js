@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260910o"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260910p"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -1807,8 +1807,15 @@
     renderLibPager();
   }
 
+  // ★ CSV 公式注入防护（2026-09-11）：Excel / WPS / Google Sheets 会把以 = + - @ 开头的单元格
+  //   当公式执行。而商品名、店铺名、备注全都来自虾皮卖家可自由填写的文本 ——
+  //   恶意卖家把商品名写成 =HYPERLINK("http://坏人站","点我")，你导出清单双击打开就等于运行它。
+  //   处理：危险开头且「不是纯数字」的文本前置一个单引号（表格软件按纯文本处理，肉眼几乎看不出）。
+  //   纯数字不处理，否则正常的负数（如 -5）会被写成 '-5。
+  //   注意：sales.js 里有一份同名副本，改这里必须同步改那边。
   function csvCell(v) {
-    const s = String(v == null ? "" : (Array.isArray(v) ? v.join("|") : v));
+    let s = String(v == null ? "" : (Array.isArray(v) ? v.join("|") : v));
+    if (/^[=+\-@\t\r]/.test(s) && !/^-?\d+(\.\d+)?%?$/.test(s)) s = "'" + s;
     return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   }
   function exportLibCsv() {

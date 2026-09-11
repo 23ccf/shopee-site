@@ -312,9 +312,12 @@
 
   /* ---------------- CSV 导出 ---------------- */
 
+  // ★ CSV 公式注入防护 + 补齐 \r（2026-09-11）：与 app.js 的 csvCell 同一口径。
+  //   表格软件会把以 = + - @ 开头的单元格当公式执行；顺手补上原本漏掉的单独 \r 字符。
   function csvCell(v) {
     var s = (v === null || v === undefined) ? "" : String(v);
-    if (/[",\n]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
+    if (/^[=+\-@\t\r]/.test(s) && !/^-?\d+(\.\d+)?%?$/.test(s)) s = "'" + s;
+    if (/[",\n\r]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
     return s;
   }
 
