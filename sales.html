@@ -172,8 +172,10 @@ tbody tr:hover{background:#fafbfd}
       <div class="formula">
         <b>为什么要备份：</b>快照和库存都保存在本机浏览器里（localStorage）。
         浏览器清理缓存、换电脑、换浏览器，数据都会没；且快照最多只保留 90 天。<br>
-        <b>建议每月导一次</b>存档。导出的 JSON 含：全部快照 + 库存成本 + 入库记录 + 设置。<br>
-        <b>还原</b>会覆盖当前本机数据，会先校验文件格式并二次确认，选错文件不会破坏现有内容。
+        <b>建议每月导一次</b>存档。导出的 JSON 含：全部快照 + 库存成本 + 入库记录 + 设置，
+        以及选品库侧的<b>收藏（含分组与备注）、关注关键词、卡片显示字段、月销门槛</b>。<br>
+        <b>还原</b>会覆盖当前本机数据，会先校验文件格式并二次确认，选错文件不会破坏现有内容；
+        写入中途失败会<b>自动回滚</b>，不会留下「新旧混合」的半套数据。
       </div>
       <div id="backupMsg" style="font-size:13px;color:var(--muted)"></div>
     </div>
@@ -273,6 +275,6 @@ tbody tr:hover{background:#fafbfd}
 
 <div class="toast" id="toast"></div>
 
-<script src="sales.js?v=20260910n"></script>
+<script src="sales.js?v=20260910o"></script>
 </body>
 </html>

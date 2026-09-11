@@ -1117,23 +1117,64 @@
     if (el) el.innerHTML = html;
   }
 
+  /* ---------------- 选品库侧的本机资产 ----------------
+   * 收藏 / 关注关键词 / 卡片显示字段 / 月销门槛 都存在 localStorage 里，但归 index.html 的 app.js 管，
+   * 本页读不到它们的内存态 —— 所以按**原始字符串**原样带走、原样写回：不解析、不重排，
+   * 避免任何「备份/还原把数据改形」（收藏时间戳、大整数、键序都不动）。
+   * ★ 2026-09-11：此前备份只含 track/inv/poLog/prefs 四个「采购与库存」侧键 ——
+   *   也就是说，备份保住的是已折叠的 ERP 数据，丢掉的却是选品工具的核心资产。
+   *   用户换电脑/清缓存后，「收藏（含分组备注）」和「关注关键词」全没了，而备份文件里没有。 */
+  var SEL_KEYS = [
+    "shopee_fav_v2",          // 收藏（含分组与备注）
+    "shopee_fav_groups_v1",   // 自定义收藏分组名
+    "shopee_kw_v1",           // 关注关键词 + 每日命中件数
+    "shopee_cardfields_v1",   // 卡片显示字段
+    "shopee_gate_v1"          // 月销门槛
+  ];
+  function selDump() {
+    var out = {};
+    SEL_KEYS.forEach(function (k) {
+      try { var v = localStorage.getItem(k); if (v !== null) out[k] = v; } catch (e) {}
+    });
+    return out;
+  }
+  function selCounts(sel) {
+    var fav = 0, kw = 0, groups = 0;
+    try { fav = Object.keys(JSON.parse(sel["shopee_fav_v2"] || "{}")).length; } catch (e) {}
+    try {
+      var a = JSON.parse(sel["shopee_kw_v1"] || "[]");
+      if (Array.isArray(a)) kw = a.length;
+    } catch (e) {}
+    try {
+      var g = JSON.parse(sel["shopee_fav_groups_v1"] || "[]");
+      if (Array.isArray(g)) groups = g.length;
+    } catch (e) {}
+    return { fav: fav, kw: kw, groups: groups };
+  }
+
   function exportBackup() {
     var s = state.snaps || loadSnaps();
+    var sel = selDump();
+    var sc = selCounts(sel);
     var data = {
       app: "shopee-erp",
       kind: "backup",
-      schema: 1,
+      schema: 2,          // 2：新增 sel（选品库侧的本机资产）。schema 1 的旧备份仍可还原。
       exportedAt: new Date().toISOString(),
       counts: {
         snapDates: s.dates.length,
         items: Object.keys(s.items).length,
         inv: Object.keys(state.inv).length,
-        poLog: state.poLog.length
+        poLog: state.poLog.length,
+        fav: sc.fav,
+        favGroups: sc.groups,
+        kw: sc.kw
       },
       track: s,
       inv: state.inv,
       prefs: state.prefs,
-      poLog: state.poLog
+      poLog: state.poLog,
+      sel: sel
     };
     var blob = new Blob([JSON.stringify(data, null, 2)],
       { type: "application/json;charset=utf-8" });
@@ -1148,7 +1189,8 @@
 
     backupMsg("✅ 已导出：" + s.dates.length + " 天快照 / " +
       Object.keys(s.items).length + " 件商品 / " +
-      Object.keys(state.inv).length + " 条库存成本");
+      Object.keys(state.inv).length + " 条库存成本" +
+      " / " + sc.fav + " 件收藏 / " + sc.kw + " 个关注词");
     toast("备份已导出");
   }
 
@@ -1173,22 +1215,49 @@
       var dates = d.track.dates.length;
       var invN = d.inv ? Object.keys(d.inv).length : 0;
       var logN = Array.isArray(d.poLog) ? d.poLog.length : 0;
+      var sel = (d.sel && typeof d.sel === "object") ? d.sel : null;   // schema 1 的旧备份没有这一段
+      var sc = selCounts(sel || {});
+      var hasSel = !!(sel && Object.keys(sel).length);
       if (!confirm("即将从备份还原：\n\n" +
           "快照：" + dates + " 天\n" +
           "库存成本：" + invN + " 条\n" +
           "入库记录：" + logN + " 批\n" +
+          (hasSel ? "收藏：" + sc.fav + " 件（含分组与备注）\n关注关键词：" + sc.kw + " 个\n" : "") +
           (d.exportedAt ? "\n备份时间：" + new Date(d.exportedAt).toLocaleString("zh-TW") : "") +
-          "\n\n⚠️ 会覆盖当前本机的快照与库存数据，且不可撤销。")) return;
+          "\n\n⚠️ 会覆盖当前本机的快照、库存" +
+          (hasSel ? "、收藏与关注关键词" : "") + "，且不可撤销。")) return;
+
+      // ★ 2026-09-11：原来是一串裸 setItem —— localStorage 写满时第 N 个会抛错，
+      //   但**前面已经写进去的那几个键不会自己回滚**，数据变成「新旧混合」，
+      //   而提示语写着「原有数据未改动」，是假的。改成先抄旧值、失败就整体回滚。
+      var plan = [
+        [LS_KEY, JSON.stringify(d.track)],
+        [INV_KEY, JSON.stringify(d.inv || {})],
+        [PO_LOG_KEY, JSON.stringify(Array.isArray(d.poLog) ? d.poLog : [])]
+      ];
+      if (d.prefs && typeof d.prefs === "object") plan.push([PREFS_KEY, JSON.stringify(d.prefs)]);
+      if (sel) SEL_KEYS.forEach(function (k) {
+        if (typeof sel[k] === "string") plan.push([k, sel[k]]);
+      });
+
+      var prev = {};
+      plan.forEach(function (p) {
+        try { prev[p[0]] = localStorage.getItem(p[0]); } catch (e) { prev[p[0]] = null; }
+      });
 
       try {
-        localStorage.setItem(LS_KEY, JSON.stringify(d.track));
-        localStorage.setItem(INV_KEY, JSON.stringify(d.inv || {}));
-        localStorage.setItem(PO_LOG_KEY, JSON.stringify(Array.isArray(d.poLog) ? d.poLog : []));
-        if (d.prefs && typeof d.prefs === "object") {
-          localStorage.setItem(PREFS_KEY, JSON.stringify(d.prefs));
-        }
+        plan.forEach(function (p) { localStorage.setItem(p[0], p[1]); });
       } catch (e) {
-        backupMsg("❌ 写入失败：浏览器存储空间不足，原有数据未改动");
+        var rolled = true;
+        plan.forEach(function (p) {
+          try {
+            if (prev[p[0]] === null) localStorage.removeItem(p[0]);
+            else localStorage.setItem(p[0], prev[p[0]]);
+          } catch (e2) { rolled = false; }
+        });
+        backupMsg(rolled
+          ? "❌ 写入失败（多半是浏览器存储空间不足），已回滚，原有数据未改动"
+          : "❌ 写入失败且回滚未完成，请刷新页面后检查「收藏」与库存数据");
         toast("还原失败");
         return;
       }
@@ -1214,7 +1283,8 @@
       $("fcCount").textContent = "";
 
       backupMsg("✅ 已还原：" + dates + " 天快照 / " + invN + " 条库存成本" +
-        (logN ? " / " + logN + " 批入库记录" : ""));
+        (logN ? " / " + logN + " 批入库记录" : "") +
+        (hasSel ? " / " + sc.fav + " 件收藏" + (sc.kw ? " / " + sc.kw + " 个关注词" : "") : ""));
       toast("备份已还原");
     };
     fr.onerror = function () {
