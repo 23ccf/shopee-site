@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260910p"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260910r"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -135,6 +135,14 @@
       console.warn("[boot] analysis.json 加载失败，使用默认配置:", e.message);
       bootWith(DEFAULT_ANALYSIS);
     });
+
+  // ★ 2026-09-11 首屏提速：并行预取 catalog.json。
+  //   旧流程是「先等 analysis.json 回来 → 才 boot() → 才去拉 catalog.json」——
+  //   而 catalog.json 是 190KB 的大头，白白晚开始一个 RTT（慢网上就是几百毫秒后才开始下商品数据）。
+  //   取 catalog 只依赖它自己，与 analysis.json 毫无关系，所以可以同时发起。
+  //   放进 microtask 是为了避开 `let` 的暂时性死区（fetchCatalogDoc 用到的几个变量在下方才声明）；
+  //   microtask 在本文件同步执行完之后才跑，那时它们都已初始化。
+  Promise.resolve().then(() => { try { fetchCatalogDoc(); } catch (e) {} });
 
   function boot() {
     const d = state.data;
@@ -1402,10 +1410,31 @@
   let _apiProbe = -1;   // -1=未探测  0=无后端（静态部署）  1=有后端
   let _apiCats = null;  // 探测成功时缓存 /api/categories 的返回
   let _apiProbeP = null;// 探测进行中的 Promise：并发调用复用它，避免同时发出多次探测
+  // ★ 2026-09-11：结论持久化。原先只在内存里记，所以每刷新一次页面就再发一次
+  //   /api/categories（实测约 250ms 的失败往返，GitHub Pages 上必然 404）。
+  //   带 24 小时有效期：无后端 → 零请求；将来真接了后端，最多 24 小时内自动重新探测到。
+  const API_PROBE_KEY = "shopee_apiprobe_v1";
+  const API_PROBE_TTL = 24 * 3600 * 1000;
+  function apiProbeCache(st) {
+    try {
+      if (st === 0) localStorage.setItem(API_PROBE_KEY, JSON.stringify({ ok: 0, t: Date.now() }));
+      else if (st === 1) localStorage.setItem(API_PROBE_KEY, JSON.stringify({ ok: 1, t: Date.now() }));
+    } catch (e) {}
+  }
+  function apiProbeCached() {
+    try {
+      const v = JSON.parse(localStorage.getItem(API_PROBE_KEY) || "null");
+      if (!v || typeof v.ok !== "number") return -1;
+      if (!v.t || (Date.now() - v.t) > API_PROBE_TTL) return -1;   // 过期就重探，别永久钉死
+      return v.ok;
+    } catch (e) { return -1; }
+  }
   function probeBackend() {
     if (_apiProbe === 0) return Promise.resolve(null);
     if (_apiProbe === 1) return Promise.resolve(_apiCats);
     if (_apiProbeP) return _apiProbeP;
+    // 上次已判定无后端且未过期 → 直接跳过，一个请求都不发
+    if (apiProbeCached() === 0) { _apiProbe = 0; return Promise.resolve(null); }
     _apiProbeP = (() => {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), 1500);
@@ -1414,9 +1443,9 @@
         .then((f) => {
           clearTimeout(timer);
           if (!f || !f.categories) throw new Error("bad payload");
-          _apiProbe = 1; _apiCats = f; return f;
+          _apiProbe = 1; _apiCats = f; apiProbeCache(1); return f;
         })
-        .catch(() => { clearTimeout(timer); _apiProbe = 0; return null; });
+        .catch(() => { clearTimeout(timer); _apiProbe = 0; apiProbeCache(0); return null; });
     })();
     return _apiProbeP;
   }
@@ -1580,9 +1609,9 @@
 
   // 静态部署无后端时的回退：加载本地 catalog.json 做前端过滤
   function loadCatalogFallback(els) {
-    fetch("data/catalog.json")
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
+    fetchCatalogDoc()
       .then((doc) => {
+        if (!doc) throw new Error("catalog.json 未取到");
         // ★ 2026-09-03：只在本地还没有数据时才用快照填充。
         //   旧写法无条件覆盖 state.lib.catalogFallback = doc.items，而 applyCatalog 已经把
         //   删除过滤后的权威数据放进去 → 下拉框构建（异步）会把它覆盖成原始快照，
@@ -1929,6 +1958,59 @@
     return u + sep + "_=" + Math.random().toString(36).slice(2) + "&t=" + Date.now();
   }
 
+  // ---------- ★ 2026-09-11 首屏性能：catalog.json 单一入口 ----------
+  // 为什么：catalog.json 是本站最大的单文件（线上 ~190KB / 491 件），而它此前在首屏
+  //   被拉了 3 次，且每次都存不下来 ——
+  //     · 两处用 bust()（?_=随机数&t=时间戳）→ 三个不同 URL，浏览器缓存全落空；
+  //     · fetchJsonTimeout 还带 cache:"no-store"，把 HTTP 缓存也主动禁掉。
+  //   实测（500 件快照）：首屏 3 次 catalog.json；每切一次页再各 2 次。
+  // 现在改成「用版本号当 URL」，缓存与「看到最新」不再二选一：
+  //   ① 版本号取 data/sync.json 的 catalog_ts（168 字节，比 catalog.json 小 1000 倍）。
+  //      已核对：sync.catalog_ts === catalog.catalog_ts，且两文件随同一次部署一起更新。
+  //   ② URL = data/catalog.json?v=<catalog_ts>。数据没变 → URL 没变 → 直接命中浏览器缓存（0 字节）；
+  //      数据一变 → URL 变 → 必然重新下载。所以不会出现「改了数据却看到旧的」。
+  //   ③ 同一页面内并发调用共享同一个 in-flight Promise → 最多发 1 次。
+  // 注意：sync.json 本身仍走 no-store（必须拿到最新版本号，它是 168 字节，代价可忽略）。
+  let _catDocCache = null;   // 已取到的 doc（页面生命周期内复用）
+  let _catDocP = null;       // in-flight Promise（并发复用）
+  let _catVer = null;        // 版本号字符串（null=还没问过）
+  function withTimeout(p, ms) {
+    return new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error("timeout " + ms + "ms")), ms);
+      p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+    });
+  }
+  // 与 fetchJsonTimeout 同款，但**允许浏览器缓存** —— 大文件必须能缓存才有意义
+  function fetchJsonCache(url, timeoutMs) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs || 12000);
+    return fetch(url, { signal: ctrl.signal, headers: { Accept: "application/json" }, cache: "default" })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error("HTTP " + r.status))))
+      .finally(() => clearTimeout(timer));
+  }
+  function fetchCatalogDoc(forceFresh) {
+    if (!forceFresh && _catDocCache) return Promise.resolve(_catDocCache);
+    if (_catDocP) return _catDocP;
+    const verP = (_catVer != null)
+      ? Promise.resolve(_catVer)
+      : fetchJsonTimeout("data/sync.json", 3000)
+          .then((d) => {
+            const t = d && (d.catalog_ts || d.sync_ts);
+            _catVer = t ? String(normTs(t)) : "";
+            return _catVer;
+          })
+          .catch(() => { _catVer = ""; return ""; });
+    _catDocP = verP
+      .then((ver) => fetchJsonCache("data/catalog.json" + (ver ? "?v=" + ver : ""), 12000))
+      .catch((e) => { console.warn("[boot] catalog.json 读取失败:", e && e.message); return null; })
+      .then((doc) => {
+        _catDocP = null;
+        if (doc && Array.isArray(doc.items)) _catDocCache = doc;
+        return doc;
+      });
+    return _catDocP;
+  }
+
   // 并行竞速：所有源同时发起，收集所有「通过 validate」的源，最终取 catalog_ts 最大（最新）者；
   // 并列时取 items 最多者（最全）。相比「谁先返回谁赢」，这能避免被「快速但陈旧的镜像」
   // 抢先定胜负——陈旧镜像 catalog_ts 与已加载相等、会判为「已是最新」却不含刚录的新商品。
@@ -2146,8 +2228,14 @@
       .catch((err) => { _diag.gh = { ok: false, error: String((err && err.message) || err) }; throw err; }));
     // maker 2..n：Gitee / CDN 镜像 / 本地快照（已删商品由 DELSET 渲染过滤，镜像稍旧也不「复活」）。
     catalogSourceUrls().forEach((u) => {
+      // ★ 2026-09-11：本地打包快照（同源 data/catalog.json）不走 bust()。
+      //   它是随部署一起更新的，用「版本号当 URL」既不会看到旧的、又能命中浏览器缓存；
+      //   旧代码在这里套 bust() → 首屏第三次完整下载 190KB（实测第 8/11 号请求都是它）。
+      //   远端镜像（github raw / jsDelivr / gitee）保持 bust()：那些 CDN 有自己的缓存，
+      //   必须穿透才能判断「哪份最新」。
+      const isLocal = u.indexOf("http") !== 0;
       makers.push(() =>
-        fetchJsonTimeout(bust(u), u.indexOf("http") === 0 ? 5000 : 2500)
+        (isLocal ? withTimeout(fetchCatalogDoc(), 4000) : fetchJsonTimeout(bust(u), 5000))
           .then((d) => { _diag.mirrors.push({ url: u, ok: !!validate(d), count: d ? (d.items || []).length : 0, ts: d ? (d.catalog_ts || 0) : 0 }); return d; })
           .catch((err) => { _diag.mirrors.push({ url: u, ok: false, error: String((err && err.message) || err) }); throw err; })
       );
@@ -2289,7 +2377,7 @@
     // 不再串行等待（旧写法 source→local→线上 三段串行，白白多等两个 RTT）。
     // ★ 只等这两个本地文件（<0.5s），wire 快速完成 → 秒开；不掺入任何远端请求。
     const pSource = fetchJsonTimeout("data/source.json", 4000).catch(() => null);
-    const pLocal = fetchJsonTimeout(bust("data/catalog.json"), 4000).catch(() => null);
+    const pLocal = withTimeout(fetchCatalogDoc(), 4000).catch(() => null);
     return Promise.all([pSource, pLocal])
       .then(([d, localDoc]) => {
         if (d && d.catalog_url) _source.catalog_url = d.catalog_url;
@@ -3411,8 +3499,7 @@
         } catch (e) {
           // 3s 内无源返回：尝试本地兜底，避免误报失败
           try {
-            const localDoc = await fetch("data/catalog.json?_=" + Math.random().toString(36).slice(2))
-              .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+            const localDoc = await fetchCatalogDoc(true).catch(() => null);
             if (localDoc && localDoc.items && localDoc.items.length) {
               const changed = applyCatalog(localDoc);
               _loadedCatalogTs = normTs(localDoc.catalog_ts);
