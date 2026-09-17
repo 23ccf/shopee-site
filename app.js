@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260910s"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260917a"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -23,6 +23,7 @@
       q: "", cat: "", loc: "", sort: "month",
       min_price: null, max_price: null, min_sold: 0, min_month: 0, min_rating: 0,
       favOnly: false, favGroup: "",   // 2026-09-11 商品库「❤️ 只看收藏 / 按分组筛选」
+      shop: "",   // 2026-09-11 商品库「店铺筛选」
       needFix: false,   // 「只看待补数据」：缺价格 或 缺名称/主图
       page: 1, size: 48, total: 0, pages: 1, items: [],
       cats: [], locs: [], catalogFallback: null, offline: false,
@@ -1164,11 +1165,13 @@
   }
   // 读取 deleted.json（小文件，走 Git Data API 无 CDN 缓存，慢网络也比大 catalog 可靠）
   let _serverDeleted = {};
+  let _prevServerDeleted = {};   // 2026-09-17 上一轮「服务端删除名单」快照，用于精确检测扩展是否显式撤销了某商品的删除标记
   // 拉取 GitHub 上的独立删除标记 deleted.json（服务端权威删除源）。
   // 2026-09-02：① 全程后台执行（不再阻塞首屏）；② 收紧超时并增加 raw 直链并行兜底——
   //   GitHub Git Data API 权威但大陆慢，raw.githubusercontent.com CDN 快但可能滞后几分钟，
   //   两路并行谁先成功用谁（本站删除有本地 DELSET 即时兜底，raw 短暂滞后无实质影响）。
   async function fetchServerDeleted() {
+    try { _prevServerDeleted = Object.assign({}, (_serverDeleted && typeof _serverDeleted === 'object') ? _serverDeleted : {}); } catch (e) {}
     const collect = (d) => {
       if (d && typeof d === 'object' && !Array.isArray(d)) {
         const cur = _serverDeleted && typeof _serverDeleted === 'object' ? _serverDeleted : {};
@@ -1276,8 +1279,8 @@
         : "所选商品在源中已不存在，无需删除。";
     } else {
       // 真实删除失败：必须在本站填写 GitHub PAT 才能写源。扩展在跨境卫士，无法桥接。
-      $("#libHint").textContent = "已从本机隐藏 " + ids.length + " 件（刷新不再显示；重新录制会再次出现）。"
-        + (r && r.error ? " 网站写入失败：" + r.error + "（请到「⚙ GitHub Token」填写具写权限的 PAT。）" : "");
+      $("#libHint").textContent = "已从本机隐藏 " + ids.length + " 件（刷新不再显示；扩展重录也不会让它们复活）。"
+        + (r && r.error ? " 网站写入 GitHub 源失败：" + r.error + "（未配 PAT 时删除仅本机生效，如需跨设备/换浏览器生效请到「⚙ GitHub Token」填写具写权限的 PAT。）" : "");
     }
   }
   function onLibExportClean() {
@@ -1351,6 +1354,8 @@
     });
     if (favGroupEl) favGroupEl.addEventListener("change", () => { L.favGroup = favGroupEl.value; go(true); });
     refreshFavGroupSelect();   // 2026-09-11 绑定完成时先填充一次分组下拉（收藏早就在本地）
+    const shopEl = $("#libShop");
+    if (shopEl) shopEl.addEventListener("change", () => { L.shop = shopEl.value; go(true); });
 
     els.pager.addEventListener("click", (e) => {
       const b = e.target.closest("button[data-page]");
@@ -1790,6 +1795,9 @@
         return L.favGroup === "__none" ? !g : g === L.favGroup;
       });
     }
+    // ★ 2026-09-11 效率：商品库「店铺筛选」——录到好店时一键只看这家店全部商品。
+    //   按 shopid 精确匹配（同名店铺不同 id 不会混）；纯前端筛选、不改数据。
+    if (L.shop) its = its.filter((it) => String(it.shopid) === String(L.shop));
     const map = {
       sold: (x) => -x.sold_total, sold30: (x) => -x.sold, total_sold: (x) => -x.sold_total,
       month: (x) => -(x.month_sold || 0), week: (x) => -(x.week_sold || 0),
@@ -1815,6 +1823,27 @@
     if (state.lib.favGroup && state.lib.favGroup !== "__none" && opts.indexOf(state.lib.favGroup) < 0) state.lib.favGroup = "";
     sel.value = state.lib.favGroup;
     sel.disabled = !state.lib.favOnly;
+  }
+
+  // 商品库「店铺」下拉：数据到位后从当前商品池算出各 shopid 的商品数，按数量降序。
+  // 选中的店铺若已无商品（例如把该店商品全删/全取消收录），自动回退「全部店铺」。
+  function refreshShopSelect() {
+    const sel = $("#libShop");
+    if (!sel) return;
+    const items = state.lib.catalogFallback || [];
+    const cnt = {};
+    items.forEach((it) => {
+      const id = it.shopid != null ? String(it.shopid) : "";
+      if (!id) return;
+      if (!cnt[id]) cnt[id] = { name: it.shop || "未知店铺", n: 0 };
+      cnt[id].n++;
+    });
+    const ids = Object.keys(cnt).sort((a, b) => cnt[b].n - cnt[a].n);
+    const parts = ['<option value="">全部店铺</option>'];
+    ids.forEach((id) => parts.push('<option value="' + esc(id) + '">' + esc(cnt[id].name) + " (" + cnt[id].n + ")</option>"));
+    sel.innerHTML = parts.join("");
+    if (state.lib.shop && !cnt[state.lib.shop]) state.lib.shop = "";
+    sel.value = state.lib.shop;
   }
 
   // 网格渲染指纹（见 clientLibSearch 内的去重逻辑）；数据被替换时必须清空才会重新渲染。
@@ -1857,7 +1886,7 @@
     renderLibHealth();          // 体检条只依赖全量库，不依赖筛选 → 放在指纹去重之前，保证数据变了就一定刷新
     const selSig = libSel && libSel.selected ? Array.from(libSel.selected).sort().join(",") : "";
     const sig = [L.q, L.cat, L.loc, L.sort, L.min_price, L.max_price, L.min_sold, L.min_month,
-      L.min_rating, L.needFix, L.favOnly, L.favGroup, L.page, L.size, L.total, items.length, _loadedCatalogTs, selSig,
+      L.min_rating, L.needFix, L.favOnly, L.favGroup, L.shop, L.page, L.size, L.total, items.length, _loadedCatalogTs, selSig,
       pageItems.map(libItemId).join(",")].join("|");
     if (sig === _libGridSig && $("#libGrid").children.length) return;
     _libGridSig = sig;
@@ -2218,11 +2247,19 @@
     //   于是这些商品被判定为"已重新录制"→ 解除屏蔽 → 复活。
     //   删除是最终决定；恢复走「清空本地删除记录」（会清空 deleted.json，标记自然消失）。
     const srvDel = (_serverDeleted && typeof _serverDeleted === 'object') ? _serverDeleted : {};
+    // ★ 2026-09-17 修复「删除全部 → 重录几个 → 同步后全部复活」：
+    //   旧逻辑只要「商品出现在新鲜源 + 服务端未标记」就把它从本机删除集合移除（原意支持"重录复活"），
+    //   但当站点删除未持久化到服务端（未配 GitHub Token / 写源超时）时，扩展重同步会把整库旧商品推回，
+    //   这些旧商品「在新鲜源里且服务端无标记」→ 被整批复活，与"删除是最终决定"铁律相悖。
+    //   修正：仅当该 id「此前曾被服务端标记删除、本次同步被显式撤销」（即扩展重录该商品并清除了 deleted 标记）
+    //   才解除本机屏蔽；否则（从未被服务端标记过 → 如纯本机删除）一律保持删除，绝不因"出现在新鲜源"而复活。
+    const prevSrvDel = (_prevServerDeleted && typeof _prevServerDeleted === 'object') ? _prevServerDeleted : {};
     let changed = false;
     for (const id of [...s]) {
-      if (!live.has(id)) continue;
-      if (srvDel[id]) continue;
-      s.delete(id); changed = true;
+      if (!live.has(id)) continue;       // 商品已从新鲜源消失 → 保持删除（隐藏）
+      if (srvDel[id]) continue;           // 服务端仍标记删除 → 保持删除（跨设备权威）
+      if (!(id in prevSrvDel)) continue;  // 此前服务端从无此删除标记（纯本机删除）→ 保持删除，不复活
+      s.delete(id); changed = true;        // 仅扩展显式撤销了它的服务端删除标记 → 解除本机屏蔽（重录复活）
     }
     if (changed) saveDelSet(s);
   }
@@ -2339,6 +2376,7 @@
           // 后端删除名单：同步注入 _serverDeleted，确保渲染层立即隐藏已删商品
           const delRes = await window.ShopeeAuth.apiGet('/api/catalog/deleted');
           if (delRes && delRes.ok && delRes.deleted && typeof delRes.deleted === 'object') {
+            try { _prevServerDeleted = Object.assign({}, (_serverDeleted && typeof _serverDeleted === 'object') ? _serverDeleted : {}); } catch (e) {}
             const oldDel = (_serverDeleted && typeof _serverDeleted === 'object') ? _serverDeleted : {};
             const merged = Object.assign({}, oldDel);
             let changed = false;
@@ -2369,6 +2407,7 @@
     try {
       const localDel = await fetchJsonTimeout("data/deleted.json", 2000).catch(() => null);
       if (localDel && typeof localDel === 'object' && !Array.isArray(localDel)) {
+        try { _prevServerDeleted = Object.assign({}, (_serverDeleted && typeof _serverDeleted === 'object') ? _serverDeleted : {}); } catch (e) {}
         const cur = (_serverDeleted && typeof _serverDeleted === 'object') ? _serverDeleted : {};
         const m = Object.assign({}, cur);
         let changed = false;
@@ -3819,6 +3858,7 @@
     state.lib.locs = Object.keys(locs).sort((a, b) => locs[b] - locs[a]);
     // 数据到位后：给关注词记一次今日命中数（同一天幂等），并刷新看板
     try { refreshKwStats(); renderKw(); } catch (e) {}
+    if (typeof refreshShopSelect === 'function') refreshShopSelect();   // 2026-09-11 数据到位后刷新「店铺」筛选下拉（typeof 守卫：避开 __sim 按名抽取 eval 的 ReferenceError）
     return true;
   }
 
