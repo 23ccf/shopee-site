@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260917a"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260917b"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -1350,12 +1350,15 @@
         favGroupEl.disabled = !favOnlyEl.checked;
         if (!favOnlyEl.checked) { L.favGroup = ""; favGroupEl.value = ""; }
       }
+      refreshFavGroupSelect();   // 同步「导出该组」按钮的禁用态（铁律23：同面板控件改了立即生效）
       go(true);
     });
-    if (favGroupEl) favGroupEl.addEventListener("change", () => { L.favGroup = favGroupEl.value; go(true); });
+    if (favGroupEl) favGroupEl.addEventListener("change", () => { L.favGroup = favGroupEl.value; refreshFavGroupSelect(); go(true); });
     refreshFavGroupSelect();   // 2026-09-11 绑定完成时先填充一次分组下拉（收藏早就在本地）
     const shopEl = $("#libShop");
     if (shopEl) shopEl.addEventListener("change", () => { L.shop = shopEl.value; go(true); });
+    const exportGroupEl = $("#libExportGroup");
+    if (exportGroupEl) exportGroupEl.addEventListener("click", exportFavGroupCsv);
 
     els.pager.addEventListener("click", (e) => {
       const b = e.target.closest("button[data-page]");
@@ -1823,6 +1826,8 @@
     if (state.lib.favGroup && state.lib.favGroup !== "__none" && opts.indexOf(state.lib.favGroup) < 0) state.lib.favGroup = "";
     sel.value = state.lib.favGroup;
     sel.disabled = !state.lib.favOnly;
+    const eg = $("#libExportGroup");
+    if (eg) eg.disabled = !(state.lib.favOnly && state.lib.favGroup && state.lib.favGroup !== "__none");
   }
 
   // 商品库「店铺」下拉：数据到位后从当前商品池算出各 shopid 的商品数，按数量降序。
@@ -1946,6 +1951,34 @@
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then((r) => build(r.items || []))
       .catch(() => build(applyLibFilters(state.lib.catalogFallback || [], L)));
+  }
+  // ★ 2026-09-17 效率：收藏分组「一键导出该组清单」。
+  //   逛市场时按分组收藏了一堆候选，常只需把某一组的短名单导出来（发给供货/比价/存档），
+  //   不必每次全量导出再手动筛。纯前端、不改数据、不影响录制。
+  function exportFavGroupCsv() {
+    const L = state.lib;
+    const grp = L.favGroup;
+    if (!grp || grp === "__none") {
+      $("#libHint").textContent = "请先勾选「❤️ 只看收藏」并选择一个具体分组，再导出该组清单。";
+      return;
+    }
+    const items = (state.lib.catalogFallback || []).filter((it) => {
+      const g = (state.fav[libItemId(it)] || {}).g || "";
+      return g === grp;
+    });
+    if (!items.length) { $("#libHint").textContent = "分组「" + grp + "」暂无商品，无法导出。"; return; }
+    const cols = ["id", "name", "price", "price_max", "main_sku", "sold_total", "month_sold", "week_sold",
+      "sold", "rating", "reviews", "liked", "stock", "shop", "loc", "brand", "url", "cats"];
+    const rows = items.map((it) => cols.map((c) => {
+      if (c === "main_sku") return csvCell(it.main_sku && it.main_sku.name ? it.main_sku.name : "");
+      return csvCell(it[c]);
+    }).join(",")).join("\n");
+    const blob = new Blob(["﻿" + cols.join(",") + "\n" + rows], { type: "text/csv;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "shopee_fav_" + grp + ".csv";
+    a.click();
+    $("#libHint").textContent = "已导出分组「" + grp + "」" + items.length + " 件为 CSV（shopee_fav_" + grp + ".csv）";
   }
 
   // =======================================================================
