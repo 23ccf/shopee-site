@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260917b"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260918a"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -3281,6 +3281,13 @@
     if (cfg.rating && Number(it.rating) > 0) meta.push(`<span class="stars" title="评分 ${it.rating}">${starStr(it.rating)} <b>${it.rating}</b></span>`);
     if (cfg.sales) meta.push(`<span class="muted" title="周/月/总销量">周${fmt(it.week_sold)} · 月${fmtMonth(it.month_sold)} · 总${fmt(it.sold_total)}</span>`
       + (it.sold_repaired ? FLAG_SOLD_FIXED : ""));
+    // 上架时间：真实 listing time（unix 秒），>0 才显示；0 = 旧数据未采集，绝不拿 first_seen 冒充
+    if (it.listed_at && Number(it.listed_at) > 0) {
+      const _la = Number(it.listed_at);
+      const _days = Math.floor((Date.now() / 1000 - _la) / 86400);
+      const _ltxt = _days >= 0 ? ("上架" + _days + "天前") : dateStrUTC8(_la);
+      meta.push(`<span class="muted" title="上架时间 ${dateStrUTC8(_la)}">${_ltxt}</span>`);
+    }
     if (cfg.official && it.official) meta.push('<span class="badge official">官方</span>');
     const where = [cfg.shop ? esc(it.shop || "—") : "", cfg.loc ? esc((it.loc || "").slice(0, 6)) : ""].filter(Boolean).join(" · ");
     return `<div class="pcard" data-id="${esc(libItemId(it))}">
@@ -3746,7 +3753,10 @@
       if (it.week_sold == null) it.week_sold = ms > 0 ? Math.round(ms / _WEEK_DIV) : 0;
       if (!it.first_seen) it.first_seen = 0;
       if (!it.last_seen) it.last_seen = it.first_seen || 0;
-      if (!it.listed_at) it.listed_at = it.first_seen || 0;
+      // ★ 上架时间 listed_at：商品真实上架时间（unix 秒），由扩展录制器从接口 ctime 下发。
+      //   缺失（旧版录制 / 接口未返回）一律置 0 —— 绝不拿「我们首次录制的时间 first_seen」冒充上架时间，
+      //   否则卡片会把「我们哪天录的」误显示成「商品哪天上架」，直接误导选品判断。
+      if (!it.listed_at || Number(it.listed_at) <= 0) it.listed_at = 0;
       if (it.img == null) it.img = "";       // 无主图 → 空串（视图走占位图分支）
       if (it.name == null) it.name = "";
       if (it.price == null) it.price = 0;
