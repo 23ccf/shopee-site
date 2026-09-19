@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260918b"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260919a"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -25,6 +25,7 @@
       favOnly: false, favGroup: "",   // 2026-09-11 商品库「❤️ 只看收藏 / 按分组筛选」
       shop: "",   // 2026-09-11 商品库「店铺筛选」
       needFix: false,   // 「只看待补数据」：缺价格 或 缺名称/主图
+      dedup: (function () { try { return localStorage.getItem("shopee_lib_dedup_v1") !== "0"; } catch (e) { return true; } })(),   // 2026-09-19 同款合并（默认开）
       page: 1, size: 48, total: 0, pages: 1, items: [],
       cats: [], locs: [], catalogFallback: null, offline: false,
       _dataReady: false,   // 首次拿到有效商品数据后置 true：此后不再允许把网格降级成「加载中」
@@ -1354,6 +1355,18 @@
       go(true);
     });
     if (favGroupEl) favGroupEl.addEventListener("change", () => { L.favGroup = favGroupEl.value; refreshFavGroupSelect(); go(true); });
+    // ★ 2026-09-19「同款合并」开关：改了立即生效（铁律23），并清网格指纹强制重建（铁律12）
+    const dedupEl = $("#libDedup");
+    if (dedupEl) {
+      dedupEl.checked = L.dedup !== false;
+      dedupEl.addEventListener("change", () => {
+        L.dedup = dedupEl.checked;
+        try { localStorage.setItem("shopee_lib_dedup_v1", L.dedup ? "1" : "0"); } catch (e) {}
+        L.page = 1;
+        _libGridSig = "";
+        go(true);
+      });
+    }
     refreshFavGroupSelect();   // 2026-09-11 绑定完成时先填充一次分组下拉（收藏早就在本地）
     const shopEl = $("#libShop");
     if (shopEl) shopEl.addEventListener("change", () => { L.shop = shopEl.value; go(true); });
@@ -1851,6 +1864,31 @@
     sel.value = state.lib.shop;
   }
 
+  // ★ 2026-09-19 同款合并：卖家一店重复铺货（同一款挂 N 条链接：同名同价同图），
+  //   逛市场时一屏十几张一模一样的卡，纯噪音还虚高「商品数」。按「店铺+名称+价格+主图」
+  //   合并成一张卡、角标「同款 ×N」。只影响展示，绝不删数据（店铺总销量等仍按链接累计）。
+  //   信息不全（无名/无价/无图）的不参与合并，避免误合。
+  function dupKeyOf(it) {
+    if (!it || !it.name || !(Number(it.price) > 0) || !it.img) return "";
+    return it.shopid + "|" + String(it.name).trim() + "|" + Number(it.price) + "|" + it.img;
+  }
+  function mergeSameItems(items) {
+    const out = [], idx = {};
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      const k = dupKeyOf(it);
+      if (!k) { out.push(it); continue; }
+      if (idx[k] == null) {
+        const c = Object.assign({}, it);   // 浅拷贝：_dupN 是展示注脚，绝不写回目录对象
+        c._dupN = 1;
+        idx[k] = out.length;
+        out.push(c);
+      } else {
+        out[idx[k]]._dupN += 1;
+      }
+    }
+    return out;
+  }
   // 网格渲染指纹（见 clientLibSearch 内的去重逻辑）；数据被替换时必须清空才会重新渲染。
   let _libGridSig = "";
 
@@ -1878,11 +1916,13 @@
     }
     state.lib._dataReady = true; // 有数据可展示 → 后续任何异常空列表都不再降级成「加载中」
     const all = applyLibFilters(items, L);
-    L.total = all.length;
-    L.pages = Math.max(1, Math.ceil(all.length / L.size));
+    // ★ 2026-09-19 同款合并（默认开）：重复铺货的同一款只占一张卡；关闭则按原始链接逐条显示
+    const allView = (L.dedup === false) ? all : mergeSameItems(all);
+    L.total = allView.length;
+    L.pages = Math.max(1, Math.ceil(allView.length / L.size));
     // 页码越界保护：删除/过滤后当前页可能超出总页数，自动回到最后一页
     if (L.page > L.pages) L.page = L.pages || 1;
-    const pageItems = all.slice((L.page - 1) * L.size, L.page * L.size);
+    const pageItems = allView.slice((L.page - 1) * L.size, L.page * L.size);
     // ★ 2026-09-03 性能：网格渲染指纹去重。
     //   旧写法每次调用都无脑重写 #libGrid.innerHTML → 48 张卡片被销毁重建，
     //   视口内的商品图要重新解码（甚至重新请求）→ 翻页/排序/勾选/心跳刷新都会「闪一下 + 卡一下」。
@@ -1891,7 +1931,7 @@
     renderLibHealth();          // 体检条只依赖全量库，不依赖筛选 → 放在指纹去重之前，保证数据变了就一定刷新
     const selSig = libSel && libSel.selected ? Array.from(libSel.selected).sort().join(",") : "";
     const sig = [L.q, L.cat, L.loc, L.sort, L.min_price, L.max_price, L.min_sold, L.min_month,
-      L.min_rating, L.needFix, L.favOnly, L.favGroup, L.shop, L.page, L.size, L.total, items.length, _loadedCatalogTs, selSig,
+      L.min_rating, L.needFix, L.favOnly, L.favGroup, L.shop, L.dedup, L.page, L.size, L.total, items.length, _loadedCatalogTs, selSig,
       pageItems.map(libItemId).join(",")].join("|");
     if (sig === _libGridSig && $("#libGrid").children.length) return;
     _libGridSig = sig;
@@ -1944,7 +1984,7 @@
     };
     // ★ 2026-09-03 性能：静态部署无 /api/search，直接本地导出，不必先等一次 404。
     if (_apiProbe === 0 || !(state.lib.catalogFallback && state.lib.catalogFallback.length)) {
-      build(applyLibFilters(state.lib.catalogFallback || [], L));
+      build(L.dedup === false ? applyLibFilters(state.lib.catalogFallback || [], L) : mergeSameItems(applyLibFilters(state.lib.catalogFallback || [], L)));
       return;
     }
     fetch("/api/search?" + p.toString())
@@ -2660,11 +2700,27 @@
       let w_sum = 0, w_price = 0;
       its.forEach((it) => { const m = it.month_sold || 0; w_sum += m; w_price += m * (it.price || 0); });
       const weighted_avg_price = w_sum > 0 ? Math.round(w_price / w_sum) : avg(prices);
-      // 月销>100的商品数
-      const hot_count = its.filter((it) => (it.month_sold || 0) >= 100).length;
-      // ★ 月销>30 的商品数（用户要求的店铺排序口径）：该店在本选品库里
-      //   「月销 > 30」的商品条数，用来衡量这家店有多少款值得跟进。
-      const hot30 = its.filter((it) => (it.month_sold || 0) > 30).length;
+      // 月销>100的商品数（★ 2026-09-19 同款去重：卖家一店重复铺货 N 条同名同价同图链接
+      //   是同一款商品，按链接数计会虚高（一店 16 条同款就能霸榜），去重后按「款数」计）
+      const dupKeyLocal = (it) => (it.name && Number(it.price) > 0 && it.img)
+        ? it.shopid + "|" + String(it.name).trim() + "|" + Number(it.price) + "|" + it.img
+        : "";
+      const uniqHot = (thr, strict) => {
+        const seen = {};
+        let n = 0;
+        its.forEach((it) => {
+          const m = it.month_sold || 0;
+          if (strict ? !(m > thr) : !(m >= thr)) return;
+          const k = dupKeyLocal(it) || ("id:" + (it.id || it.itemid));
+          if (seen[k]) return;
+          seen[k] = 1;
+          n++;
+        });
+        return n;
+      };
+      const hot_count = uniqHot(100, false);
+      // ★ 月销>30 的商品数（用户要求的店铺排序口径，严格 >30）：衡量这家店有多少款值得跟进。
+      const hot30 = uniqHot(30, true);
       // 店铺总销量 = 该店在录商品的累计销量（sold_total）之和
       const shop_total_sold = its.reduce((a, b) => a + (b.sold_total || b.total_sold || 0), 0);
       // 涨跌趋势：周销×4.3 vs 月销，估算环比变化
@@ -3295,6 +3351,7 @@
       ${(cfg.fav || FORCE_FAV) ? `<button class="fav-btn ${on}" data-id="${esc(libItemId(it))}" title="${on ? "取消收藏" : "收藏"}">${on ? "❤" : "🤍"}</button>` : ""}
       ${img}
       ${freshBadgeHtml(it)}
+      ${(it._dupN > 1) ? `<span class="dup-badge" title="同店重复铺货：同名同价同图共 ${it._dupN} 条链接，已合并为一张卡（可在筛选区关闭合并）">同款 ×${it._dupN}</span>` : ""}
       <div class="pcard-body">
         <div class="pcard-name" title="${esc(it.name)}">${esc(it.name || "（未采集到名称）")}</div>
         ${cfg.price ? `<div class="pcard-price">${priceHtml(it)}</div>` : ""}
@@ -3759,12 +3816,25 @@
       if (!it.listed_at || Number(it.listed_at) <= 0) it.listed_at = 0;
       if (it.img == null) it.img = "";       // 无主图 → 空串（视图走占位图分支）
       if (it.name == null) it.name = "";
+      // ★ 2026-09-19：规格词不是商品名（旧录制把变体名「款式/顏色」存成了 name，线上 12 件）
+      //   → 显示端清空，卡片走「未采集到名称」+ 体检条「缺名称」补录入口。
+      if (it.name && /^(款式|顏色|颜色|尺寸|規格|规格|型號|型号|選項|选项|分類|分类|類別|类别)$/.test(String(it.name).replace(/\s+/g, ""))) it.name = "";
       if (it.price == null) it.price = 0;
       if (it.rating == null) it.rating = 0;
       // 价格区间上限：只有严格高于现价的才认（脏数据/等于现价一律清掉，卡片按单一价格显示）
+      // ★ 2026-09-19 单位错位修复：录制端曾把 ×100000 的 price_max 按 ×100 解（大 1000 倍），
+      //   线上出现「NT$189 - 355,000」这种离谱区间（真值 189–3,550）。残留数据不能等重录，
+      //   显示端直接修：≥现价×50 且 ÷100/÷1000 后落回 (现价, 现价×50) → 修正并打标。
       if (it.price_max != null) {
-        const _mx = Number(it.price_max);
-        if (!isFinite(_mx) || _mx <= Number(it.price) || _mx >= 1000000) it.price_max = undefined;
+        let _mx = Number(it.price_max);
+        const _pr = Number(it.price) || 0;
+        if (isFinite(_mx) && _pr > 0 && _mx >= _pr * 50 && _mx < 1000000) {
+          const _c1 = Math.round(_mx / 100 * 100) / 100, _c2 = Math.round(_mx / 1000 * 100) / 100;
+          if (_c1 > _pr && _c1 < _pr * 50) { _mx = _c1; it.price_max_repaired = true; }
+          else if (_c2 > _pr && _c2 < _pr * 50) { _mx = _c2; it.price_max_repaired = true; }
+        }
+        // 修不回来的超宽区间（≥现价50倍）与其它脏数据一样丢弃 —— 宁缺勿错，卡片按单一价格显示
+        if (!isFinite(_mx) || _mx <= _pr || _mx >= 1000000 || (_pr > 0 && _mx >= _pr * 50)) it.price_max = undefined;
         else it.price_max = _mx;
       }
       if (it.reviews == null) it.reviews = 0;
