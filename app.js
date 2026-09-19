@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260919d"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260919e"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -1798,6 +1798,19 @@
     if (L.min_sold) its = its.filter((it) => (it.sold_total || 0) >= L.min_sold);
     if (L.min_month) its = its.filter((it) => (it.month_sold || 0) >= L.min_month);
     if (L.min_rating) its = its.filter((it) => (it.rating || 0) >= L.min_rating);
+    // ★ 2026-09-19【用户要求「消除价格未采集」】默认视图不显示无价格商品。
+    //   录制端已改为「无有效售价不入站」，这里是历史（已在线）脏数据的兼底：
+    //   它们只在「只看待补数据」视图里出现（那里有「↻ 去重录」入口），
+    //   保证商品库卡片上永远不会再出现「价格未采集」红字。
+    //   ⚠ 切勿反过来隐藏「月销未知」商品：那是在售宝贝，只是虾皮没给月销字段，
+    //   由录制端详情页精修补全，绝不能一刀切丢掉（数据在却对用户说没了 = 铁律 9）。
+    if (!L.needFix) {
+      const _b4 = its.length;
+      its = its.filter((it) => Number(it.price) > 0);
+      L._noPriceHidden = _b4 - its.length;   // 供计数文案使用
+    } else {
+      L._noPriceHidden = 0;
+    }
     // 只看待补数据：缺价格 或 缺名称/主图。配合「按月销降序」= 先补最值钱的那几件
     // （月销已证明好卖、却看不到价格的商品，补起来收益最大）。
     if (L.needFix) its = its.filter((it) => !(Number(it.price) > 0) || !it.name || !it.img);
@@ -1936,9 +1949,16 @@
     if (sig === _libGridSig && $("#libGrid").children.length) return;
     _libGridSig = sig;
     const _hid = state.lib.hiddenByGate || 0;
+    const _np = L._noPriceHidden || 0;
     const _ver = fmtAgo(_loadedCatalogTs);
-    $("#libCount").textContent = `${fmt(L.total)} 件商品` +
-      (_hid ? ` · 已按「月销≥${state.lib.gateUsed}」隐藏 ${fmt(_hid)} 件低动销` : "") +
+    // ★ 2026-09-19：默认视图额外隐藏「无价格」商品（收录端已改为无价不入站，
+    //   这里是历史数据的兜底）。两种隐藏合计必须说出来，
+    //   否则用户数卡片会比「隐藏 N 件」少一截，以为数据丢了。
+    let _hidTxt = "";
+    if (_hid && _np) _hidTxt = ` · 已隐藏 ${fmt(_hid + _np)} 件（月销<${state.lib.gateUsed} ${fmt(_hid)} 件 · 缺价格 ${fmt(_np)} 件）`;
+    else if (_hid) _hidTxt = ` · 已按「月销≥${state.lib.gateUsed}」隐藏 ${fmt(_hid)} 件低动销`;
+    else if (_np) _hidTxt = ` · 已隐藏 ${fmt(_np)} 件（缺价格，见「只看待补数据」）`;
+    $("#libCount").textContent = `${fmt(L.total)} 件商品` + _hidTxt +
       (_ver ? ` · 数据版本 ${_ver}` : "");
     if (_loadedCatalogTs) $("#libCount").title = "整站数据版本：" + fmtStamp(_loadedCatalogTs)
       + "（云端约每 3–5 分钟刷新一次；单件的新鲜度见卡片左上角）";
