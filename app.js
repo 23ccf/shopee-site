@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260919b"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260919c"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -1627,7 +1627,7 @@
         </div>
       </div>
       <div class="p-cards">
-        <div class="p-card"><div class="n">${m(d.price)}${(d.price_max && d.price_max > d.price) ? '<span class="pr-sep">–</span>' + m(d.price_max) : ''}${priceSanity(d.price) ? ' <span style="color:#c0392b;font-size:11px;font-weight:600;" title="价格疑似未正确换算，待复核">⚠</span>' : (d.price_repaired ? ' <span style="color:#2e7d32;font-size:11px;font-weight:600;" title="此价格已由系统自动校正">✓</span>' : "")}</div><div class="l">${(d.price_max && d.price_max > d.price) ? '价格区间' : '售价'}</div></div>
+        <div class="p-card"><div class="n">${m(d.price)}${(d.price_max && d.price_max > d.price) ? '<span class="pr-sep">~</span>' + m(d.price_max) : ''}${priceSanity(d.price) ? ' <span style="color:#c0392b;font-size:11px;font-weight:600;" title="价格疑似未正确换算，待复核">⚠</span>' : (d.price_repaired ? ' <span style="color:#2e7d32;font-size:11px;font-weight:600;" title="此价格已由系统自动校正">✓</span>' : "")}</div><div class="l">${(d.price_max && d.price_max > d.price) ? '价格区间' : '售价'}</div></div>
         <div class="p-card"><div class="n">${d.main_sku && d.main_sku.price != null ? m(d.main_sku.price) : "—"}</div><div class="l">主卖SKU价</div></div>
         <div class="p-card"><div class="n">${f(d.total_sold)}</div><div class="l">链接总销量</div></div>
         <div class="p-card"><div class="n">${fmtMonth(d.month_sold)}</div><div class="l">月销量</div></div>
@@ -3320,7 +3320,7 @@
     // 还会把「价格低→高」排序的前几十名全占掉），这里显式说明。
     if (!(lo > 0)) return '<span class="muted">价格未采集</span>';
     const warn = priceSanity(it.price) ? FLAG_PRICE_WARN : (it.price_repaired ? FLAG_PRICE_FIXED : "");
-    if (hi > lo && lo > 0) return `${cur}${fmt(lo)}<span class="pr-sep">–</span>${fmt(hi)}${warn}`;
+    if (hi > lo && lo > 0) return `${cur}${fmt(lo)}<span class="pr-sep">~</span>${fmt(hi)}${warn}`;
     return `${cur}${fmt(lo)}${warn}`;
   }
 
