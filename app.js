@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260919e"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260919f"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -24,7 +24,7 @@
       min_price: null, max_price: null, min_sold: 0, min_month: 0, min_rating: 0,
       favOnly: false, favGroup: "",   // 2026-09-11 商品库「❤️ 只看收藏 / 按分组筛选」
       shop: "",   // 2026-09-11 商品库「店铺筛选」
-      needFix: false,   // 「只看待补数据」：缺价格 或 缺名称/主图
+      needFix: false,   // 「只看待补数据」：缺价格/缺名称/缺主图/主图是视频封面（口径见 needFixOne）
       dedup: (function () { try { return localStorage.getItem("shopee_lib_dedup_v1") !== "0"; } catch (e) { return true; } })(),   // 2026-09-19 同款合并（默认开）
       page: 1, size: 48, total: 0, pages: 1, items: [],
       cats: [], locs: [], catalogFallback: null, offline: false,
@@ -929,6 +929,9 @@
     } else if (!(Number(it.price) > 0)) {
       label = "↻ 缺价格，去重录";
       tip = "这条没采到价格（旧版记录或页面未展示），打开原页重录即可补上";
+    } else if (isCoverImg(it.img)) {
+      label = "↻ 主图是视频封面，去重录";
+      tip = "这条录到的是视频首帧（_cover），不是商品主图；打开原页重录即可换成真主图，并顺带补齐价格区间与月销";
     } else if (!it.name || !it.img) {
       label = "↻ 缺" + ((!it.name && !it.img) ? "名称和图" : (!it.name ? "名称" : "主图")) + "，去重录";
       tip = "这条缺关键信息，打开原页重录即可补上";
@@ -1701,13 +1704,26 @@
   // 用户会把「未采集」当成「真的是 0」，选品判断直接跑偏。
   // 与其让用户自己一个个发现，不如把整库缺口摊在最显眼的一行上，并且给出动作（卡片上的「↻ 去重录」）。
   const HEALTH_KEY = "shopee_health_v1";
+  // 视频商品的"主图"在虾皮 CDN 上是视频首帧，URL 形如 xxx_cover / xxx_cover@resize...
+  // 它**不是**商品主图。展示出来就是用户看到的「主图变成了视频首页」。
+  function isCoverImg(u) {
+    return /_cover(?:@|[?]|$)/i.test(String(u || ""));
+  }
+  // 「待补数据」的唯一定义：缺价格 / 缺名称 / 缺主图 / 主图是视频封面。
+  // ★ 必须只有这一处定义（体检条计数、待补视图筛选、卡片入口共用），
+  //   否则「说缺 N 件」和「点进去只看到 M 件」会对不上（铁律 16 的口径单一）。
+  function needFixOne(it) {
+    return !(Number(it.price) > 0) || !it.name || !it.img || isCoverImg(it.img);
+  }
   function dataHealth(items) {
     const now = Date.now() / 1000;
-    const h = { total: 0, noPrice: 0, noMeta: 0, soldFix: 0, stale: 0, noRange: 0, priceWarn: 0 };
+    const h = { total: 0, noPrice: 0, noMeta: 0, coverImg: 0, soldFix: 0, stale: 0, noRange: 0, priceWarn: 0 };
     (items || []).forEach((it) => {
       h.total++;
       if (!(Number(it.price) > 0)) h.noPrice++;
       if (!it.name || !it.img) h.noMeta++;
+      // ★ 有图但图是视频封面 —— 旧口径漏掉的就是这一类（用户投诉的第①点）
+      if (isCoverImg(it.img)) h.coverImg++;
       if (it.sold_repaired) h.soldFix++;
       if (priceSanity(it.price)) h.priceWarn++;
       // 价格区间：多规格商品才有 price_max（>price）。旧版录制器不采 → 全库 0 条区间
@@ -1727,10 +1743,11 @@
     const raw = (state.catalogAll && (state.catalogAll._rawItems || state.catalogAll.items)) || [];
     if (!raw.length) { el.classList.add("hidden"); return; }
     const h = dataHealth(raw);
-    const needFixN = raw.filter((it) => !(Number(it.price) > 0) || !it.name || !it.img).length;
+    const needFixN = raw.filter(needFixOne).length;
     const parts = [];
     if (h.noPrice) parts.push("缺价格 <b>" + fmt(h.noPrice) + "</b>");
     if (h.noMeta) parts.push("缺名称/主图 <b>" + fmt(h.noMeta) + "</b>");
+    if (h.coverImg) parts.push("主图是视频封面 <b>" + fmt(h.coverImg) + "</b>");
     if (h.priceWarn) parts.push("价格待校验 <b>" + fmt(h.priceWarn) + "</b>");
     if (h.soldFix) parts.push("总销已修正 <b>" + fmt(h.soldFix) + "</b>");
     if (h.stale) parts.push("超 7 天未更新 <b>" + fmt(h.stale) + "</b>");
@@ -1738,6 +1755,9 @@
     // 价格区间是全库性的缺口（需要 v3.1.9 重录才会产生），单独一句话讲清楚，不混进计数胶囊里
     const rangeNote = h.noRange > h.total * 0.5
       ? "价格区间需用新版录制器重录后才会出现；"
+      : "";
+    const coverNote = h.coverImg > 0
+      ? "其中 " + fmt(h.coverImg) + " 件主图录成了视频封面，点「去重录」即换成商品主图；"
       : "";
     el.innerHTML = '<span class="hb-title">📋 数据体检</span>'
       + parts.map((p) => '<span class="hb-item">' + p + "</span>").join("")
@@ -1748,7 +1768,7 @@
             + "✓ 正在只看待补数据 · 点此取消</button>"
           : '<button class="hb-fix" data-fix="1" title="按月销从高到低排，先补最值钱的">只看待补数据 <b>'
             + fmt(needFixN) + "</b> 件 ›</button>")
-      + '<span class="hb-note">全库 ' + fmt(h.total) + " 件。" + rangeNote
+      + '<span class="hb-note">全库 ' + fmt(h.total) + " 件。" + rangeNote + coverNote
       + '点卡片上的「↻ 去重录」逐件补齐（打开原页即可，零风控）。</span>'
       + '<button class="hb-close" title="知道了，不再提示">×</button>';
     el.classList.remove("hidden");
@@ -1813,7 +1833,7 @@
     }
     // 只看待补数据：缺价格 或 缺名称/主图。配合「按月销降序」= 先补最值钱的那几件
     // （月销已证明好卖、却看不到价格的商品，补起来收益最大）。
-    if (L.needFix) its = its.filter((it) => !(Number(it.price) > 0) || !it.name || !it.img);
+    if (L.needFix) its = its.filter(needFixOne);
     // ★ 2026-09-11 效率优化：商品库「❤️ 只看收藏 / 按分组筛选」。
     //   逛市场时一键只看自己收藏的短名单，且可叠加全部现有排序/筛选（收藏面板只能按收藏顺序，做不到这点）。
     //   分组下拉与收藏面板共用 favGroupOptions()，随收藏变化自动更新；纯前端筛选、绝不改数据。
