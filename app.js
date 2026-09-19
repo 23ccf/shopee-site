@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260919a"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260919b"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -1737,7 +1737,7 @@
     if (!parts.length) { el.classList.add("hidden"); return; }
     // 价格区间是全库性的缺口（需要 v3.1.9 重录才会产生），单独一句话讲清楚，不混进计数胶囊里
     const rangeNote = h.noRange > h.total * 0.5
-      ? "价格区间需用录制器 v3.1.9 重录后才会出现；"
+      ? "价格区间需用新版录制器重录后才会出现；"
       : "";
     el.innerHTML = '<span class="hb-title">📋 数据体检</span>'
       + parts.map((p) => '<span class="hb-item">' + p + "</span>").join("")
@@ -3820,6 +3820,23 @@
       //   → 显示端清空，卡片走「未采集到名称」+ 体检条「缺名称」补录入口。
       if (it.name && /^(款式|顏色|颜色|尺寸|規格|规格|型號|型号|選項|选项|分類|分类|類別|类别)$/.test(String(it.name).replace(/\s+/g, ""))) it.name = "";
       if (it.price == null) it.price = 0;
+      // ★ 2026-09-19：拼接价修复 —— 旧录制端 textContent 把相邻元素「$448」+「3.5折」拼成
+      //   "$4483.5折" 入库（线上 340 件「价格待校验」主源，真值 448）。判别（对真实小数价安全）：
+      //   ① 价格恰好一位小数（/\d+\.\d$/）；② 尾 3 位是合法折扣 N.N（1.0–9.9）；
+      //   ③ 剥掉尾 3 位后是 ≥30 的整数（真实小数价 199.7 剥完只剩 1 → 必被③拦下）。
+      //   两位小数（12026.09）与整数黏连（4488）格式歧义无法可靠还原 → 保持原值只挂 ⚠，等重录覆盖。
+      if (it.price) {
+        const _ps = String(it.price);
+        const _tail = _ps.slice(-3);
+        if (/^\d+\.\d$/.test(_ps) && /^\d\.\d$/.test(_tail) && Number(_tail) >= 1 && Number(_tail) <= 9.9) {
+          const _pv = Number(_ps.slice(0, -3));
+          if (Number.isInteger(_pv) && _pv >= 30 && _pv < Number(it.price)) {
+            it.price_raw_concat = it.price;   // 留原始值供导出自查
+            it.price = _pv;
+            it.price_repaired = true;
+          }
+        }
+      }
       if (it.rating == null) it.rating = 0;
       // 价格区间上限：只有严格高于现价的才认（脏数据/等于现价一律清掉，卡片按单一价格显示）
       // ★ 2026-09-19 单位错位修复：录制端曾把 ×100000 的 price_max 按 ×100 解（大 1000 倍），
