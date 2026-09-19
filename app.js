@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260919c"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260919d"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -2189,7 +2189,7 @@
       const onValid = (v) => {
         valid.push(v);
         if (left === 0) { pick(); return; }            // 所有源已回 → 立即定胜负
-        if (!grace) grace = setTimeout(pick, 700);      // 否则给 0.7s 让更新鲜的源抵达
+        if (!grace) grace = setTimeout(pick, 220);      // 否则给 0.22s 让更新鲜的源抵达（提速）
       };
       makers.forEach((mk) => {
         let p;
@@ -2204,7 +2204,7 @@
           () => { if (!done && --left === 0) pick(); }
         );
       });
-      setTimeout(() => { if (!done) pick(); }, 5500); // 整体兜底，防某源永不返回导致挂死
+      setTimeout(() => { if (!done) pick(); }, 3800); // 整体兜底，防某源永不返回导致挂死（提速）
     });
   }
 
@@ -2247,11 +2247,23 @@
     const headers = { 'Accept': 'application/vnd.github+json' };
     if (token) headers['Authorization'] = 'Bearer ' + token;
     const base = `https://api.github.com/repos/${owner}/${repo}`;
-    const tree = await fetchJsonTimeout(`${base}/git/trees/${branch}?recursive=1`, 9000, headers);
+    // ★ 2026-09-19d 提速：非递归 tree（catalog.json 就在根目录）比 recursive=1 快约一半
+    //   （实测 2.7s → 1.45s），拿到的 blob SHA 完全够用。
+    const tree = await fetchJsonTimeout(`${base}/git/trees/${branch}`, 8000, headers);
     const cpath = _source.catalog_path || 'catalog.json';
     const entry = (tree.tree || []).find((e) => e.path === cpath);
     if (!entry) throw new Error('catalog not found in tree');
-    const blobUrl = `${base}/git/blobs/${entry.sha}`;
+    const sha = entry.sha;
+    // ★ 2026-09-19d 提速：Git blob SHA 是内容哈希，SHA 未变 = 内容未变 → 直接复用本地缓存，
+    //   省掉 ~2s 的 blob 大文件下载。「立即同步」在数据没变时约 1 秒即可完成。
+    if (loadCatalogSha() === sha) {
+      const cached = loadCatalogCache();
+      if (cached && cached.doc && Array.isArray(cached.doc.items)) {
+        if (minCatalogTs && normTs(cached.doc.catalog_ts) < minCatalogTs) throw new Error('cached older than required');
+        return cached.doc;
+      }
+    }
+    const blobUrl = `${base}/git/blobs/${sha}`;
     // 优先用 raw media type 取原始内容：体积比 base64 JSON 包装小一半
     // （实测 gzip 后 80KB vs 158KB），且免掉 base64 解码。失败再降级 base64。
     let doc = null;
@@ -2271,6 +2283,7 @@
       doc = JSON.parse(content);
     }
     if (minCatalogTs && normTs(doc.catalog_ts) < minCatalogTs) throw new Error('api catalog older than required');
+    saveCatalogSha(sha);
     return doc;
   }
 
@@ -2302,6 +2315,15 @@
       const o = JSON.parse(raw);
       return (o && o.doc && Array.isArray(o.doc.items)) ? o : null;
     } catch (e) { return null; }
+  }
+  // ★ 2026-09-19d：缓存 catalog.json 的 Git blob SHA（内容哈希）。SHA 未变 = 内容未变，
+  //   同步时可跳过 blob 下载直接复用缓存，把「立即同步」压到 ~1s（见 fetchCatalogViaApi）。
+  const CATALOG_SHA_KEY = "shopee_catalog_sha";
+  function saveCatalogSha(sha) {
+    try { localStorage.setItem(CATALOG_SHA_KEY, String(sha)); } catch (e) {}
+  }
+  function loadCatalogSha() {
+    try { return localStorage.getItem(CATALOG_SHA_KEY) || null; } catch (e) { return null; }
   }
   function loadDelSet() {
     try { return new Set(JSON.parse(localStorage.getItem(DELSET_KEY) || "[]")); } catch (e) { return new Set(); }
@@ -3645,8 +3667,8 @@
           // 超时(8s)才退 Gitee / CDN 镜像兜底。已删商品由本地删除集合在渲染时过滤，不会复活。
           // 按钮上限 13 秒：给「GitHub 读取(≤8s) + 镜像兜底」留余量；所有源都失败才回退本地快照。
           const withTimeout = (p, ms) =>
-            Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("13 秒超时")), ms))]);
-          const doc = await withTimeout(fetchLatestCatalog(_loadedCatalogTs), 13000);
+            Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("8 秒超时")), ms))]);
+          const doc = await withTimeout(fetchLatestCatalog(_loadedCatalogTs), 8000);
           const newCount = (doc.items || []).length;
           const changed = applyCatalog(doc);
           _loadedCatalogTs = normTs(doc.catalog_ts);
