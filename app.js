@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260919f"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260919h"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -24,7 +24,7 @@
       min_price: null, max_price: null, min_sold: 0, min_month: 0, min_rating: 0,
       favOnly: false, favGroup: "",   // 2026-09-11 商品库「❤️ 只看收藏 / 按分组筛选」
       shop: "",   // 2026-09-11 商品库「店铺筛选」
-      needFix: false,   // 「只看待补数据」：缺价格/缺名称/缺主图/主图是视频封面（口径见 needFixOne）
+      needFix: false,   // 「只看待补数据」：缺价格/缺名称/缺主图/主图是视频封面/月销未知（见 needFixOne）
       dedup: (function () { try { return localStorage.getItem("shopee_lib_dedup_v1") !== "0"; } catch (e) { return true; } })(),   // 2026-09-19 同款合并（默认开）
       page: 1, size: 48, total: 0, pages: 1, items: [],
       cats: [], locs: [], catalogFallback: null, offline: false,
@@ -39,9 +39,20 @@
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])
     );
   const fmt = (n) => (n == null ? "-" : Number(n).toLocaleString("zh-Hant"));
-  // 月销格式化：月销=0 表示「近30天月销量未知」（虾皮台站已隐藏该文案 + item/get 被 403），
-  // 显示为「未知」而非 0，避免用户误以为仍是抓取失败。
+  // 月销格式化（**聚合 / 已算好的数字** 场景，如店铺行的月销合计）：
+  // 这里只能判断「值是多少」，判断不了「是未知还是真的有 0」——
+  // 渲染**商品自身**的月销请用 monthDisp(it)。
   const fmtMonth = (n) => (Number(n) > 0 ? Number(n).toLocaleString("zh-Hant") : "未知");
+  // ★ 2026-09-19 商品自身月销显示（三态，用户投诉第③点）：
+  //   month_sold_known === false → 「未知」（虾皮台站隐藏月销文案，详情页接口也补不到）
+  //   已知（含 0）              → 显示真实数字。「0」就是近 30 天没卖，不是未知。
+  //   旧实现把两种都渲染成「未知」：总销够大被保留的那批商品（月销字段缺失）
+  //   卡片上直接写着「月销未知」—— 这正是用户看到的那个问题。
+  const monthDisp = (it) => {
+    if (!it || it.month_sold_known === false) return "未知";
+    const v = Number(it.month_sold);
+    return isFinite(v) ? v.toLocaleString("zh-Hant") : "未知";
+  };
   // 虾皮 price 字段常见单位为 1e-5（原币 * 100000）。若数据库里仍残留 raw 价格，显示前再归一化一次。
   function normalizePrice(v) {
     if (v == null) return 0;
@@ -819,7 +830,7 @@
       <div class="p-cards">
         <div class="p-card"><div class="n">${f(d.historical_sold)}</div><div class="l">总销量</div></div>
         <div class="p-card"><div class="n">${f(d.weekly_sold)}</div><div class="l">周销量</div></div>
-        <div class="p-card"><div class="n">${fmtMonth(d.month_sold)}</div><div class="l">月销量</div></div>
+        <div class="p-card"><div class="n">${monthDisp(d)}</div><div class="l">月销量</div></div>
         <div class="p-card"><div class="n">${m(d.price_min)}${d.price_max && d.price_max !== d.price_min ? " ~ " + m(d.price_max) : ""}</div><div class="l">售价区间</div></div>
       </div>
       ${tiers ? `<div class="p-tiers">${tiers}</div>` : ""}
@@ -935,6 +946,9 @@
     } else if (!it.name || !it.img) {
       label = "↻ 缺" + ((!it.name && !it.img) ? "名称和图" : (!it.name ? "名称" : "主图")) + "，去重录";
       tip = "这条缺关键信息，打开原页重录即可补上";
+    } else if (it.month_sold_known === false) {
+      label = "↻ 月销未知，去重录";
+      tip = "虾皮台站有时会隐藏月销文案；打开原页重录，录制器会用详情页接口（item/get）把月销补回来";
     } else {
       return "";                       // 数据又新又全 → 不给入口，不制造噪音
     }
@@ -1633,7 +1647,7 @@
         <div class="p-card"><div class="n">${m(d.price)}${(d.price_max && d.price_max > d.price) ? '<span class="pr-sep">~</span>' + m(d.price_max) : ''}${priceSanity(d.price) ? ' <span style="color:#c0392b;font-size:11px;font-weight:600;" title="价格疑似未正确换算，待复核">⚠</span>' : (d.price_repaired ? ' <span style="color:#2e7d32;font-size:11px;font-weight:600;" title="此价格已由系统自动校正">✓</span>' : "")}</div><div class="l">${(d.price_max && d.price_max > d.price) ? '价格区间' : '售价'}</div></div>
         <div class="p-card"><div class="n">${d.main_sku && d.main_sku.price != null ? m(d.main_sku.price) : "—"}</div><div class="l">主卖SKU价</div></div>
         <div class="p-card"><div class="n">${f(d.total_sold)}</div><div class="l">链接总销量</div></div>
-        <div class="p-card"><div class="n">${fmtMonth(d.month_sold)}</div><div class="l">月销量</div></div>
+        <div class="p-card"><div class="n">${monthDisp(d)}</div><div class="l">月销量</div></div>
         <div class="p-card"><div class="n">${f(d.week_sold)}</div><div class="l">周销量</div></div>
         <div class="p-card"><div class="n">${starStr(d.rating)} ${d.rating}</div><div class="l">评分（${f(d.reviews)} 评价）</div></div>
         <div class="p-card"><div class="n">${f(d.liked)}</div><div class="l">点赞</div></div>
@@ -1709,21 +1723,26 @@
   function isCoverImg(u) {
     return /_cover(?:@|[?]|$)/i.test(String(u || ""));
   }
-  // 「待补数据」的唯一定义：缺价格 / 缺名称 / 缺主图 / 主图是视频封面。
+  // 「待补数据」的唯一定义：缺价格 / 缺名称 / 缺主图 / 主图是视频封面 / 月销未知。
   // ★ 必须只有这一处定义（体检条计数、待补视图筛选、卡片入口共用），
   //   否则「说缺 N 件」和「点进去只看到 M 件」会对不上（铁律 16 的口径单一）。
+  // ★ 月销未知认 `month_sold_known === false`（归一阶段留下的三态标记）。
+  //   不能直接看 month_sold：未知时它被归一成 0，比 0 会把「真的没卖」也算成缺口。
   function needFixOne(it) {
-    return !(Number(it.price) > 0) || !it.name || !it.img || isCoverImg(it.img);
+    return !(Number(it.price) > 0) || !it.name || !it.img
+      || isCoverImg(it.img) || it.month_sold_known === false;
   }
   function dataHealth(items) {
     const now = Date.now() / 1000;
-    const h = { total: 0, noPrice: 0, noMeta: 0, coverImg: 0, soldFix: 0, stale: 0, noRange: 0, priceWarn: 0 };
+    const h = { total: 0, noPrice: 0, noMeta: 0, coverImg: 0, noMonth: 0, soldFix: 0, stale: 0, noRange: 0, priceWarn: 0 };
     (items || []).forEach((it) => {
       h.total++;
       if (!(Number(it.price) > 0)) h.noPrice++;
       if (!it.name || !it.img) h.noMeta++;
       // ★ 有图但图是视频封面 —— 旧口径漏掉的就是这一类（用户投诉的第①点）
       if (isCoverImg(it.img)) h.coverImg++;
+      // ★ 月销未知（三态标记；「真的 0」不算）：录制端会用详情页精修补，补不到就进待补视图
+      if (it.month_sold_known === false) h.noMonth++;
       if (it.sold_repaired) h.soldFix++;
       if (priceSanity(it.price)) h.priceWarn++;
       // 价格区间：多规格商品才有 price_max（>price）。旧版录制器不采 → 全库 0 条区间
@@ -1748,6 +1767,7 @@
     if (h.noPrice) parts.push("缺价格 <b>" + fmt(h.noPrice) + "</b>");
     if (h.noMeta) parts.push("缺名称/主图 <b>" + fmt(h.noMeta) + "</b>");
     if (h.coverImg) parts.push("主图是视频封面 <b>" + fmt(h.coverImg) + "</b>");
+    if (h.noMonth) parts.push("月销未知 <b>" + fmt(h.noMonth) + "</b>");
     if (h.priceWarn) parts.push("价格待校验 <b>" + fmt(h.priceWarn) + "</b>");
     if (h.soldFix) parts.push("总销已修正 <b>" + fmt(h.soldFix) + "</b>");
     if (h.stale) parts.push("超 7 天未更新 <b>" + fmt(h.stale) + "</b>");
@@ -1822,14 +1842,24 @@
     //   录制端已改为「无有效售价不入站」，这里是历史（已在线）脏数据的兼底：
     //   它们只在「只看待补数据」视图里出现（那里有「↻ 去重录」入口），
     //   保证商品库卡片上永远不会再出现「价格未采集」红字。
-    //   ⚠ 切勿反过来隐藏「月销未知」商品：那是在售宝贝，只是虾皮没给月销字段，
-    //   由录制端详情页精修补全，绝不能一刀切丢掉（数据在却对用户说没了 = 铁律 9）。
+    //   ★ 2026-09-19【用户第③点「月销未知必须杜绝出现」】月销未知也一并从默认视图隐藏。
+    //   注意这不违反铁律 9：它们没有被丢掉，而是进了「只看待补数据」——
+    //   那里有「↻ 月销未知，去重录」入口，体检条也如实报数，随时能找到。
+    //   ⚠ 判定认 `month_sold_known === false`（未知）；0 是「真的没卖」，属正常数据，照常显示为 0。
     if (!L.needFix) {
-      const _b4 = its.length;
-      its = its.filter((it) => Number(it.price) > 0);
-      L._noPriceHidden = _b4 - its.length;   // 供计数文案使用
+      let _np = 0, _nm = 0;
+      its = its.filter((it) => {
+        const okPrice = Number(it.price) > 0;
+        const okMonth = it.month_sold_known !== false;
+        if (!okPrice) { _np++; return false; }   // 两样都缺时只归类到「缺价格」，避免重复计数
+        if (!okMonth) { _nm++; return false; }
+        return true;
+      });
+      L._noPriceHidden = _np;
+      L._noMonthHidden = _nm;   // 供计数文案使用
     } else {
       L._noPriceHidden = 0;
+      L._noMonthHidden = 0;
     }
     // 只看待补数据：缺价格 或 缺名称/主图。配合「按月销降序」= 先补最值钱的那几件
     // （月销已证明好卖、却看不到价格的商品，补起来收益最大）。
@@ -1970,14 +2000,22 @@
     _libGridSig = sig;
     const _hid = state.lib.hiddenByGate || 0;
     const _np = L._noPriceHidden || 0;
+    const _nm = L._noMonthHidden || 0;
     const _ver = fmtAgo(_loadedCatalogTs);
-    // ★ 2026-09-19：默认视图额外隐藏「无价格」商品（收录端已改为无价不入站，
-    //   这里是历史数据的兜底）。两种隐藏合计必须说出来，
+    // ★ 2026-09-19：默认视图额外隐藏「无价格」「月销未知」商品（收录端已改为无价不入站 +
+    //   详情页精修补月销，这里是历史数据的兜底）。
+    //   三类隐藏的分类互斥、逐个报数，总和必须等于实际隐藏件数 ——
     //   否则用户数卡片会比「隐藏 N 件」少一截，以为数据丢了。
     let _hidTxt = "";
-    if (_hid && _np) _hidTxt = ` · 已隐藏 ${fmt(_hid + _np)} 件（月销<${state.lib.gateUsed} ${fmt(_hid)} 件 · 缺价格 ${fmt(_np)} 件）`;
-    else if (_hid) _hidTxt = ` · 已按「月销≥${state.lib.gateUsed}」隐藏 ${fmt(_hid)} 件低动销`;
-    else if (_np) _hidTxt = ` · 已隐藏 ${fmt(_np)} 件（缺价格，见「只看待补数据」）`;
+    if (_hid && !_np && !_nm) {
+      _hidTxt = ` · 已按「月销≥${state.lib.gateUsed}」隐藏 ${fmt(_hid)} 件低动销`;
+    } else if (_hid || _np || _nm) {
+      const _bits = [];
+      if (_hid) _bits.push(`月销<${state.lib.gateUsed} ${fmt(_hid)} 件`);
+      if (_np) _bits.push(`缺价格 ${fmt(_np)} 件`);
+      if (_nm) _bits.push(`月销未知 ${fmt(_nm)} 件`);
+      _hidTxt = ` · 已隐藏 ${fmt(_hid + _np + _nm)} 件（${_bits.join(" · ")}）`;
+    }
     $("#libCount").textContent = `${fmt(L.total)} 件商品` + _hidTxt +
       (_ver ? ` · 数据版本 ${_ver}` : "");
     if (_loadedCatalogTs) $("#libCount").title = "整站数据版本：" + fmtStamp(_loadedCatalogTs)
@@ -2888,7 +2926,7 @@
         <div class="pcard-body">
           <div class="pcard-name" title="${esc(it.name)}">${esc(it.name || "（未采集到名称）")}</div>
           <div class="pcard-price">${priceHtml(it)}</div>
-          <div class="pcard-meta"><span class="stars">${starStr(it.rating)}</span><span class="muted">月${fmtMonth(it.month_sold)} · 总${fmt(it.sold_total)}</span></div>
+          <div class="pcard-meta"><span class="stars">${starStr(it.rating)}</span><span class="muted">月${monthDisp(it)} · 总${fmt(it.sold_total)}</span></div>
         </div></div>`).join("");
     $("#modalBody").innerHTML = `<div class="p-head"><div class="p-meta">
         <div class="p-name">${esc(its[0].shop || "店铺")} <span class="badge">店铺分析</span></div>
@@ -3397,7 +3435,7 @@
     const meta = [];
     // rating 从未被采集 → 恒为 0。摆一排「★ 0」是纯噪音，有真实评分才显示。
     if (cfg.rating && Number(it.rating) > 0) meta.push(`<span class="stars" title="评分 ${it.rating}">${starStr(it.rating)} <b>${it.rating}</b></span>`);
-    if (cfg.sales) meta.push(`<span class="muted" title="周/月/总销量">周${fmt(it.week_sold)} · 月${fmtMonth(it.month_sold)} · 总${fmt(it.sold_total)}</span>`
+    if (cfg.sales) meta.push(`<span class="muted" title="周/月/总销量">周${fmt(it.week_sold)} · 月${monthDisp(it)} · 总${fmt(it.sold_total)}</span>`
       + (it.sold_repaired ? FLAG_SOLD_FIXED : ""));
     // 上架时间：真实 listing time（unix 秒），>0 才显示；0 = 旧数据未采集，绝不拿 first_seen 冒充。
     // ★ 2026-09-18：按用户要求显示「年月日」，天数放悬停提示。
@@ -3852,9 +3890,17 @@
       const sid = it.shopid, iid = it.itemid;
       if (!it.id && sid != null && iid != null) it.id = sid + "_" + iid;
       if (!it.url && sid != null && iid != null) it.url = "https://shopee.tw/product/" + sid + "/" + iid;
-      const ms = Number(it.month_sold) || 0;
+      // ★ 三态保留（2026-09-19）：月销「未知」必须与「真的 0」区分开。
+      //   旧写法 `Number(it.month_sold) || 0` 把 null 直接写成 0 → 三态在这一步就被抹平，
+      //   下游只能把 0 显示成「未知」，而总销够大被保留的商品恰好就是这种 → 卡片写「月销未知」。
+      //   现在：month_sold 仍用 0 参与既有算术（各调用点都有 `|| 0` 兜底，行为零变化），
+      //   另把「到底知不知道」记在 month_sold_known 上，供显示端与数据体检使用。
+      const _msRaw = it.month_sold;
+      const _msKnown = _msRaw != null && _msRaw !== "" && isFinite(Number(_msRaw));
+      const ms = _msKnown ? Number(_msRaw) : 0;
       let ts = Number(it.sold_total != null ? it.sold_total : it.total_sold) || 0;
       it.month_sold = ms;
+      it.month_sold_known = _msKnown;
       it.monthly_sold = ms;            // 补齐别名：详情弹窗/热销/飙升表读的是 monthly_sold
       // ★ 总销一致性修正（2026-09-10 数据体检发现 7 件「月销 > 总销」）：
       //   月销必然是「累计总销」在最近 30 天的子集，所以 总销 < 月销 在物理上不可能 ——
