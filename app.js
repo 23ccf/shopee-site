@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260922b"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260922c"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -4091,9 +4091,7 @@
       if (MIN_MONTH <= 0) return true;                        // 用户选择「全部」→ 不过滤
       const ms = Number(it.month_sold) || 0;
       const ts = Number(it.sold_total != null ? it.sold_total : it.total_sold) || 0;
-      if (ms >= MIN_MONTH) return true;                       // 月销达标
-      // 月销未知（虾皮隐藏文案）但累计总销够大 → 视为疑似爆款保留
-      if (ms === 0 && ts >= 200) return true;
+      if (ms >= MIN_MONTH) return true;                       // 月销达标（用户要求：仅显示月销≥30）
       _hiddenByGate++;
       return false;
     });
