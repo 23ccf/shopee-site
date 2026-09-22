@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260922c"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260922d"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -1826,7 +1826,14 @@
   }
 
   function applyLibFilters(items, L) {
-    let its = items.slice();
+    // ★ 「只看待补数据」必须基于全量库（_rawItems），不能只用「过门槛」的 items：
+    //   被月销门槛挡掉的商品同样可能缺价格/缺月销，若只在过门槛集合里找，
+    //   体检条如实报「N 件待补」但点进来一件都看不到 → 数据被藏死。
+    //   违反铁律 33（缺口必须可闭环：待补视图 + 「↻ 去重录」入口）
+    //   与铁律 34（体检条计数须与待补视图实际可达数一致）。
+    //   默认视图（!needFix）仍用 items，保证「月销未知/无价格」不出现在商品库卡片上。
+    const _rawPool = (state.catalogAll && (state.catalogAll._rawItems || state.catalogAll.items)) || null;
+    let its = (L.needFix && _rawPool && _rawPool.length) ? _rawPool.slice() : items.slice();
     // ★ 命中口径必须只有一处：统一走 libMatch（含简繁归一）。
     //   这里原先内联了一份不带简繁转换的匹配，导致「看板支持简繁、商品库不支持」的割裂。
     const q = (L.q || "").trim();
