@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260919h"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260922a"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -2276,7 +2276,9 @@
           (v) => {
             if (done) return;
             if (v && validate(v)) onValid(v);
-            else if (v && Array.isArray(v.items) && !fallbackDoc) { fallbackDoc = v; if (left === 0) pick(); }
+            // ★ 2026-09-22 Bug B：兜底快照也必须是「非空」的，否则空 catalog 会被当作 fallback 返回，
+            //   进而在 wireSync 里 applyCatalog(空) 清空网格。sync.json 无 items 字段 → Array.isArray 为 false，不受影响。
+            else if (v && Array.isArray(v.items) && v.items.length > 0 && !fallbackDoc) { fallbackDoc = v; if (left === 0) pick(); }
             if (--left === 0) pick();
           },
           () => { if (!done && --left === 0) pick(); }
@@ -2440,8 +2442,11 @@
     // 合并「上次删除时间戳」作为最低新鲜度门槛：删除后该值 > 0，stale 镜像的 catalog_ts 偏旧
     // 会被 validate 拒绝，只剩 GitHub API 通过 → 删除持久生效。
     const minTs = Math.max(normTs(minCatalogTs), normTs(localStorage.getItem(DELETE_TS_KEY)));
+    // ★ 2026-09-22 Bug B：validate 必须要求 items 非空。
+    //   旧写法只判 Array.isArray(items)，空 catalog（items:[]）也算「有效」→
+    //   在 CN 拉不到 GitHub 时 raceValid 把空快照当 winner 返回，applyCatalog 直接清空网格（白屏）。
     const validate = (doc) =>
-      !!(doc && Array.isArray(doc.items) && normTs(doc.catalog_ts) >= minTs);
+      !!(doc && Array.isArray(doc.items) && doc.items.length > 0 && normTs(doc.catalog_ts) >= minTs);
 
     // 自诊断：记录每次同步各源的真实结果，失败时一眼定位根因（控制台 window.__syncDiag 可取）。
     const _diag = (window.__syncDiag = {
@@ -3747,9 +3752,24 @@
           const withTimeout = (p, ms) =>
             Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("8 秒超时")), ms))]);
           const doc = await withTimeout(fetchLatestCatalog(_loadedCatalogTs), 8000);
+          // ★ 2026-09-22 Bug B：空数据 / 比当前更旧的数据，都不许覆盖现有网格。
+          //   根因：打包的 data/catalog.json 曾为空，CN 拉不到 GitHub 时 raceValid 回退空快照 → 清空白屏。
+          //   现在即便所有源失败，也只保留已显示的商品，绝不拿空/旧数据覆盖；后台再悄悄重试一次。
+          const shown = (state.lib.catalogFallback || []).length;
+          const docTs = doc ? normTs(doc.catalog_ts) : 0;
+          const empty = !doc || !doc.items || doc.items.length === 0;
+          const older = _loadedCatalogTs > 0 && docTs > 0 && docTs < _loadedCatalogTs;
+          if (empty || older) {
+            if (empty && shown > 0) showToast("☁ 线上返回空数据，已保留本地现有 " + shown + " 件商品");
+            else if (older && shown > 0) showToast("☁ 线上暂未更新（保留本地 " + shown + " 件）");
+            else if (shown > 0) showToast("☁ 同步无变化（保留本地 " + shown + " 件）");
+            else showToast("同步失败：线上无数据（请确认 GitHub 源可访问）");
+            revalidateCatalog(_loadedCatalogTs);
+            return; // 跳过 applyCatalog，保持现有网格
+          }
           const newCount = (doc.items || []).length;
           const changed = applyCatalog(doc);
-          _loadedCatalogTs = normTs(doc.catalog_ts);
+          _loadedCatalogTs = docTs;
           if (changed) refreshCurrentView();
           // 同步 badge
           const sb = $("#syncBadge");
