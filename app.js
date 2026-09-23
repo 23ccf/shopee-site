@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260923b"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260923c"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -2483,6 +2483,26 @@
     //   （最新）者定胜负，不会被「快速但陈旧的镜像」抢先；删除场景由 minTs 门槛
     //   （DELETE_TS）拒绝 stale 镜像 + applyCatalog 渲染级 delSet/srvDel 双保险兜底。
     let _ghEmpty = null;               // 2026-09-23：权威源确实返回「空 catalog（已清空）」时的兜底
+    // ★ 2026-09-23c：同源状态指针（catalog_state.json，与本站同域）。
+    //   根因复盘：api.github.com 在 CN 网络经常超时/不可达 → maker1 拿不到结果 →
+    //   _ghEmpty 永远是 null，而某个仍缓存旧数据的 CDN 边缘（jsDelivr/ghproxy 各地不一致，
+    //   purge 不保证全边缘生效）在竞速里抢赢 → 「已清空」永远无法生效。
+    //   解法：新鲜度裁判改用同源文件——用户既然能打开本站就 100% 能拉到它，
+    //   指针里带权威 catalog_ts + items 数：比指针旧的镜像数据一律视为陈旧；
+    //   指针 items=0 且比竞速结果新 → 真正清空。录制器 v3.3.9+ 每次推送会同步更新本指针。
+    let _statePtr = null;
+    try {
+      const pj = await fetchJsonTimeout("catalog_state.json?bust=" + Date.now(), 2500);
+      if (pj && normTs(pj.catalog_ts) > 0 && typeof pj.items === "number") _statePtr = pj;
+    } catch (e) { _statePtr = null; }
+    // 依据指针判定「应视为已清空」：指针 items=0 且（无竞速结果 或 指针比结果更新）。
+    const _clearedDoc = (winnerTs) => {
+      if (_ghEmpty) return _ghEmpty;
+      if (_statePtr && _statePtr.items === 0 && normTs(_statePtr.catalog_ts) > (winnerTs || 0)) {
+        return { items: [], deleted: {}, catalog_ts: normTs(_statePtr.catalog_ts), _clearedSource: "pointer" };
+      }
+      return null;
+    };
     const makers = [];
     // maker 1：GitHub Git Data API（权威源，永远实时）。限时由 raceValid 整体兜底控制。
     makers.push(() => fetchCatalogViaApi(minTs)
@@ -2518,26 +2538,28 @@
     });
     try {
       const doc = await raceValid(makers, validate, true);
-      // ★ 2026-09-23b：权威源已确认「已清空」时，清空永远赢过任何镜像的陈旧缓存——
-      //   jsDelivr/ghproxy 对旧 catalog 缓存长达数天，旧数据「非空、能过 validate」，
-      //   会抢赢 race 导致清空不生效（实测：线上已空，页面仍显示 1 天前 243 件）。
-      if (_ghEmpty) {
-        _diag.winner = "github-empty(cleared)";
+      // ★ 2026-09-23b/c：权威源已确认「已清空」时（API 直返空，或同源指针说空且比镜像新），
+      //   清空永远赢过任何镜像的陈旧缓存——jsDelivr/ghproxy 对旧 catalog 缓存长达数天且各
+      //   边缘不一致，旧数据「非空、能过 validate」会抢赢 race 导致清空不生效。
+      const _cd = _clearedDoc(normTs(doc && doc.catalog_ts));
+      if (_cd) {
+        _diag.winner = "cleared(" + (_cd._clearedSource || "github-empty") + ")";
         try { localStorage.removeItem(CATALOG_CACHE_KEY); } catch (_) {}
         try { localStorage.removeItem(DELSET_KEY); } catch (_) {}
-        return _ghEmpty;
+        return _cd;
       }
       _diag.winner = "raced(github+mirrors)";
       saveCatalogCache(doc);       // 缓存成功数据 → 远端全坏时本机兜底
       return doc;
     } catch (e) {
-      // ★ 2026-09-23：全源校验失败，但权威 GitHub 源成功返回了「空 catalog（已清空）」→
+      // ★ 2026-09-23：全源校验失败，但权威源判定「已清空」（API 直返空 或 同源指针）→
       //   视为有效清空：清掉本机缓存与删除集合，让网站真正显示空（否则旧缓存一直显示旧商品）。
-      if (_ghEmpty) {
-        _diag.winner = "github-empty(cleared)";
+      const _cd = _clearedDoc(0);
+      if (_cd) {
+        _diag.winner = "cleared(" + (_cd._clearedSource || "github-empty") + ")";
         try { localStorage.removeItem(CATALOG_CACHE_KEY); } catch (_) {}
         try { localStorage.removeItem(DELSET_KEY); } catch (_) {}
-        return _ghEmpty;
+        return _cd;
       }
       _diag.error = "all sources failed: " + String((e && e.message) || e);
       throw e;
@@ -2553,11 +2575,12 @@
       const minTs = Math.max(_loadedCatalogTs, serverTs || 0);
       let doc = null;
       try { doc = await fetchLatestCatalog(minTs); } catch (e) { doc = null; }
-      if (doc && doc.items && normTs(doc.catalog_ts) >= minTs) return doc;
+      // ★ 2026-09-23c：清空 doc（items=[] 但带 _clearedSource）也是有效结果，不许当失败重试。
+      if (doc && Array.isArray(doc.items) && (doc.items.length > 0 ? normTs(doc.catalog_ts) >= minTs : !!doc._clearedSource)) return doc;
       lastDoc = doc || lastDoc;
       if (i < maxAttempts - 1) await sleep(5000);
     }
-    if (lastDoc && lastDoc.items) return lastDoc;
+    if (lastDoc && Array.isArray(lastDoc.items) && (lastDoc.items.length > 0 || lastDoc._clearedSource)) return lastDoc;
     throw new Error("all sources failed after retries");
   }
 
@@ -3791,8 +3814,10 @@
           // 超时(8s)才退 Gitee / CDN 镜像兜底。已删商品由本地删除集合在渲染时过滤，不会复活。
           // 按钮上限 13 秒：给「GitHub 读取(≤8s) + 镜像兜底」留余量；所有源都失败才回退本地快照。
           const withTimeout = (p, ms) =>
-            Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("8 秒超时")), ms))]);
-          const doc = await withTimeout(fetchLatestCatalog(_loadedCatalogTs), 8000);
+            Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("超时")), ms))]);
+          // ★ 2026-09-23c：8s→11s。fetchLatestCatalog 现含同源指针探测(≤2.5s)+多源竞速，
+          //   CN 网络下 8s 会把「本可成功的权威空数据」掐死成失败 → 清空不生效。
+          const doc = await withTimeout(fetchLatestCatalog(_loadedCatalogTs), 11000);
           // ★ 2026-09-22 Bug B：空数据 / 比当前更旧的数据，都不许覆盖现有网格。
           //   根因：打包的 data/catalog.json 曾为空，CN 拉不到 GitHub 时 raceValid 回退空快照 → 清空白屏。
           //   现在即便所有源失败，也只保留已显示的商品，绝不拿空/旧数据覆盖；后台再悄悄重试一次。
@@ -3802,7 +3827,7 @@
           const older = _loadedCatalogTs > 0 && docTs > 0 && docTs < _loadedCatalogTs;
           // ★ 2026-09-23b：权威源返回「已清空」不是异常空数据 → 必须真正清空网格，
           //   不走下方「保留本地」保护（那是为「源全挂/打包快照为空」设计的白屏防护）。
-          const clearedBySource = !!(empty && doc && doc._clearedSource === "github-empty");
+          const clearedBySource = !!(empty && doc && (doc._clearedSource === "github-empty" || doc._clearedSource === "pointer"));
           if (clearedBySource && shown > 0) showToast("☁ 线上源已清空：已移除本地 " + shown + " 件");
           if ((empty && !clearedBySource) || older) {
             if (empty && shown > 0) showToast("☁ 线上返回空数据，已保留本地现有 " + shown + " 件商品");
