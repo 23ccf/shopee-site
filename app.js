@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260923a"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260923b"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -2497,7 +2497,7 @@
         if (doc) {
           const _isEmpty = Array.isArray(doc.items) && doc.items.length === 0;
           const _tsOk = normTs(doc.catalog_ts) >= minTs;
-          if (_isEmpty && _tsOk) _ghEmpty = doc;
+          if (_isEmpty && _tsOk) { _ghEmpty = doc; doc._clearedSource = "github-empty"; }
         }
         return doc;
       })
@@ -2518,6 +2518,15 @@
     });
     try {
       const doc = await raceValid(makers, validate, true);
+      // ★ 2026-09-23b：权威源已确认「已清空」时，清空永远赢过任何镜像的陈旧缓存——
+      //   jsDelivr/ghproxy 对旧 catalog 缓存长达数天，旧数据「非空、能过 validate」，
+      //   会抢赢 race 导致清空不生效（实测：线上已空，页面仍显示 1 天前 243 件）。
+      if (_ghEmpty) {
+        _diag.winner = "github-empty(cleared)";
+        try { localStorage.removeItem(CATALOG_CACHE_KEY); } catch (_) {}
+        try { localStorage.removeItem(DELSET_KEY); } catch (_) {}
+        return _ghEmpty;
+      }
       _diag.winner = "raced(github+mirrors)";
       saveCatalogCache(doc);       // 缓存成功数据 → 远端全坏时本机兜底
       return doc;
@@ -3791,7 +3800,11 @@
           const docTs = doc ? normTs(doc.catalog_ts) : 0;
           const empty = !doc || !doc.items || doc.items.length === 0;
           const older = _loadedCatalogTs > 0 && docTs > 0 && docTs < _loadedCatalogTs;
-          if (empty || older) {
+          // ★ 2026-09-23b：权威源返回「已清空」不是异常空数据 → 必须真正清空网格，
+          //   不走下方「保留本地」保护（那是为「源全挂/打包快照为空」设计的白屏防护）。
+          const clearedBySource = !!(empty && doc && doc._clearedSource === "github-empty");
+          if (clearedBySource && shown > 0) showToast("☁ 线上源已清空：已移除本地 " + shown + " 件");
+          if ((empty && !clearedBySource) || older) {
             if (empty && shown > 0) showToast("☁ 线上返回空数据，已保留本地现有 " + shown + " 件商品");
             else if (older && shown > 0) showToast("☁ 线上暂未更新（保留本地 " + shown + " 件）");
             else if (shown > 0) showToast("☁ 同步无变化（保留本地 " + shown + " 件）");
