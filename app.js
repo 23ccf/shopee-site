@@ -4,7 +4,7 @@
   // 部署版本号：每次修复后部署都递增，并在 index.html 的 app.js 引用后加 ?v= 同号，
   // 强制浏览器放弃旧缓存（静态站点会长期缓存 app.js，否则用户测到的永远是旧逻辑）。
   // 排查问题时可在控制台执行 `console.log(window.__APP_VERSION)` 核对线上实际版本。
-  const APP_VERSION = "20260922e"; window.__APP_VERSION = APP_VERSION;
+  const APP_VERSION = "20260923a"; window.__APP_VERSION = APP_VERSION;
   // 在顶栏显示版本号芯片（用户无需打开控制台就能确认是否加载到新代码，
   // 这是排查"改了没用/反复失败"假象的最直接方式）。
   try { document.getElementById('appVersionChip').textContent = 'v' + APP_VERSION; } catch (e) {}
@@ -2482,6 +2482,7 @@
     //   正确性不受影响：raceValid 收集所有通过 validate 的源后取 catalog_ts 最大
     //   （最新）者定胜负，不会被「快速但陈旧的镜像」抢先；删除场景由 minTs 门槛
     //   （DELETE_TS）拒绝 stale 镜像 + applyCatalog 渲染级 delSet/srvDel 双保险兜底。
+    let _ghEmpty = null;               // 2026-09-23：权威源确实返回「空 catalog（已清空）」时的兜底
     const makers = [];
     // maker 1：GitHub Git Data API（权威源，永远实时）。限时由 raceValid 整体兜底控制。
     makers.push(() => fetchCatalogViaApi(minTs)
@@ -2490,6 +2491,13 @@
         if (doc && validate(doc)) {
           const tsMin = normTs(localStorage.getItem(DELETE_TS_KEY));
           if (tsMin > 0 && normTs(doc.catalog_ts) >= tsMin) { try { pruneDelSet(doc); } catch (e) {} }
+        }
+        // ★ 2026-09-23：若权威源确实返回「空 catalog（已清空）」而非网络错误，标记为 cleared，
+        //   供下方 raceValid 全失败时使用——否则旧 localStorage 缓存会一直显示已删商品，清空不生效。
+        if (doc) {
+          const _isEmpty = Array.isArray(doc.items) && doc.items.length === 0;
+          const _tsOk = normTs(doc.catalog_ts) >= minTs;
+          if (_isEmpty && _tsOk) _ghEmpty = doc;
         }
         return doc;
       })
@@ -2514,6 +2522,14 @@
       saveCatalogCache(doc);       // 缓存成功数据 → 远端全坏时本机兜底
       return doc;
     } catch (e) {
+      // ★ 2026-09-23：全源校验失败，但权威 GitHub 源成功返回了「空 catalog（已清空）」→
+      //   视为有效清空：清掉本机缓存与删除集合，让网站真正显示空（否则旧缓存一直显示旧商品）。
+      if (_ghEmpty) {
+        _diag.winner = "github-empty(cleared)";
+        try { localStorage.removeItem(CATALOG_CACHE_KEY); } catch (_) {}
+        try { localStorage.removeItem(DELSET_KEY); } catch (_) {}
+        return _ghEmpty;
+      }
       _diag.error = "all sources failed: " + String((e && e.message) || e);
       throw e;
     }
