@@ -1,5 +1,1 @@
-{
-  "catalog_ts": 1790149855,
-  "items": 0,
-  "note": "authoritative source-state pointer. Same-origin (always reachable when the site loads). Updated by recorder v3.3.9+ on every shopee-sync push and by clear ops. app.js uses it to overrule stale CDN mirrors: any mirror doc older than catalog_ts is stale; items=0 + newer ts = cleared."
-}
+{"catalog_ts":1790216447,"items":33,"note":"authoritative source-state pointer, updated by recorder on every push"}
